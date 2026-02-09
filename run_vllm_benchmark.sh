@@ -70,6 +70,7 @@ NO_PROFILE=false
 # 用户指定的实验子集
 USER_MODELS=""
 USER_QUANTS=""
+GPU_MEMORY_UTILIZATION_OVERRIDE=""
 
 # ======================== 参数解析 ========================
 
