@@ -33,8 +33,8 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # 时间戳, 用于区分多次实验
 RUN_TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 
-# Profiling 控制
-ENABLE_PROFILING=true
+# Profiling 控制 (默认关闭, profiling 会严重拖慢推理, 性能数字不准)
+ENABLE_PROFILING=false
 PROFILING_BASE_DIR="${BENCH_BASE_DIR}/benchmark_profiles/${RUN_TIMESTAMP}"
 
 # 结果输出目录 (每次实验独立子目录, 不覆盖)
@@ -84,7 +84,8 @@ print_usage() {
     echo "  --diagnostic          诊断模式: 只跑 BF16+Qwen3-1.7B, 少量请求, 验证能跑通"
     echo "  --offline             [默认] 离线模式: LLM.generate() 直接推理, 高并发, 最接近 verl rollout"
     echo "  --online              在线服务模式: 走 HTTP, 支持 profiling 采集, 但并发受限"
-    echo "  --no-profile          不采集 torch profiling (仅 online 模式有 profiling)"
+    echo "  --profile             采集 torch profiling (默认关闭, 会拖慢推理)"
+    echo "  --no-profile          不采集 torch profiling (默认)"
     echo "  --models MODELS       逗号分隔的模型列表, 如: qwen3-1.7b,pangu-7b,qwen3-30b-a3b"
     echo "  --quants QUANTS       逗号分隔的量化列表, 如: bf16,w8a16,w8a8_dynamic"
     echo "  --input-len N         输入 prompt 长度 (默认: ${INPUT_LEN})"
@@ -108,6 +109,9 @@ while [[ $# -gt 0 ]]; do
             shift ;;
         --online)
             BENCH_MODE="online"
+            shift ;;
+        --profile)
+            ENABLE_PROFILING=true
             shift ;;
         --no-profile)
             NO_PROFILE=true
