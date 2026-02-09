@@ -208,8 +208,7 @@ get_model_field() {
             log_error "未知模型: $model_key"
             return 1 ;;
     esac
-    # eval 兼容 bash 3.x + set -u, 变量未定义时返回空字符串
-    eval "echo \"\${${var_name}:-}\""
+    eval "echo \"\${${var_name}:-}\"" 2>/dev/null || echo ""
 }
 
 # 获取对应量化精度的模型路径 (返回空字符串表示该组合不存在)
@@ -240,16 +239,24 @@ get_model_path() {
     eval "echo \"\${${var_name}:-}\""
 }
 
-# 获取模型的 gpu_memory_utilization (CLI override > per-model config > 默认 0.9)
+# 获取模型的 gpu_memory_utilization
+# CLI --gpu-mem-util 覆盖 > per-model 配置 > 默认 0.9
 get_gpu_mem_util() {
     local model_key="$1"
-    if [[ -n "$GPU_MEMORY_UTILIZATION_OVERRIDE" ]]; then
-        echo "$GPU_MEMORY_UTILIZATION_OVERRIDE"
-    else
-        local val
-        val=$(get_model_field "$model_key" "GPU_MEM_UTIL" 2>/dev/null || true)
-        echo "${val:-0.9}"
+
+    # CLI 覆盖优先
+    if [[ -n "${GPU_MEMORY_UTILIZATION_OVERRIDE}" ]]; then
+        echo "${GPU_MEMORY_UTILIZATION_OVERRIDE}"
+        return
     fi
+
+    # per-model 硬编码, 不依赖动态变量查找
+    case "$model_key" in
+        qwen3-1.7b)    echo "${QWEN3_1_7B_GPU_MEM_UTIL:-0.9}" ;;
+        pangu-7b)       echo "${PANGU_7B_GPU_MEM_UTIL:-0.9}" ;;
+        qwen3-30b-a3b) echo "${QWEN3_30B_A3B_GPU_MEM_UTIL:-0.9}" ;;
+        *)              echo "0.9" ;;
+    esac
 }
 
 # 判断某个 model+quant 组合是否应该跳过
@@ -569,6 +576,12 @@ run_benchmark_offline() {
     result_file=$(get_result_file "$model_key" "$quant")
     local bench_log
     bench_log=$(get_bench_log "$model_key" "$quant")
+
+    # 安全检查: gpu_mem_util 不能为空
+    if [[ -z "${gpu_mem_util}" ]]; then
+        log_error "get_gpu_mem_util 返回空值 (model_key=${model_key}), 使用默认 0.9"
+        gpu_mem_util="0.9"
+    fi
 
     local total_seqs=$((num_prompts * NUM_SAMPLES_PER_PROMPT))
     log_step "运行 Offline Benchmark: ${display_name} / ${quant^^}"
