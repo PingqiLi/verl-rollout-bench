@@ -1,0 +1,66 @@
+# verl-rollout-bench 配置文件
+#
+# 添加新模型: 在 models 下新增一个块即可
+# paths 中的 ${MODEL_BASE} 会被环境变量替换
+
+# ======================== 全局配置 ========================
+
+global:
+  # 模型根目录 (也可通过环境变量 MODEL_BASE 覆盖)
+  model_base: "/data/l50044498/models"
+
+  # Benchmark 默认模式: offline (直接 LLM.generate) 或 online (HTTP 服务)
+  bench_mode: "offline"
+
+  # 负载参数 (所有模型共用, 保证公平对比)
+  input_len: 512
+  output_len: 256
+  num_prompts: 32           # per-GPU prompt 数
+  num_samples_per_prompt: 8 # 每 prompt 生成 n 个采样 (仅 offline)
+
+  # Online 模式参数
+  max_concurrency: 128
+  request_rate: "inf"
+  server_port: 8080
+
+  # Ascend NPU
+  ascend_devices: "0,1,2,3,4,5,6,7"
+  bucket_min: 512
+  bucket_max: 512
+
+# ======================== 模型配置 ========================
+
+models:
+  qwen3-1.7b:
+    display: "Qwen3-1.7B"
+    tp: 1
+    gpu_mem_util: 0.4
+    paths:
+      bf16: "${MODEL_BASE}/qwen3-1.7b"
+      w8a16: "${MODEL_BASE}/qwen3-1.7b-W8A16"
+      w8a8: "${MODEL_BASE}/qwen3-1.7b-W8A8D"
+
+  pangu-7b:
+    display: "Pangu-7B"
+    tp: 1
+    gpu_mem_util: 0.6
+    paths:
+      bf16: "${MODEL_BASE}/openPangu-Embedded-7B-V1.1"
+      w8a16: "${MODEL_BASE}/openPangu-Embedded-7B-V1.1-W8A16"
+      w8a8: "${MODEL_BASE}/openPangu-Embedded-7B-V1.1-W8A8D"
+
+  qwen3-30b-a3b:
+    display: "Qwen3-30B-A3B"
+    tp: 4
+    gpu_mem_util: 0.8
+    paths:
+      bf16: "${MODEL_BASE}/Qwen3-30B-A3B-Instruct-2507"
+      w8a8: "${MODEL_BASE}/Qwen3-30B-A3B-Instruct-2507-W8A8D"
+
+  qwen3-32b:
+    display: "Qwen3-32B"
+    tp: 4
+    gpu_mem_util: 0.9
+    paths:
+      bf16: "${MODEL_BASE}/Qwen3-32B"
+      w8a8: "${MODEL_BASE}/Qwen3-32B-W8A8D"

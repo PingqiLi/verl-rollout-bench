@@ -14,63 +14,43 @@
 # ============================================================
 set -euo pipefail
 
-# ======================== 默认配置 ========================
+# ======================== 配置加载 ========================
 
-# 可通过环境变量预设, 脚本内为 fallback 默认值
+# 配置文件和解析器路径 (与脚本同目录)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_YAML="${CONFIG_YAML:-${SCRIPT_DIR}/config.yaml}"
+
+# 从 config.yaml 加载全局默认值 (环境变量可覆盖)
+eval "$(python3 "${SCRIPT_DIR}/config_parser.py" "${CONFIG_YAML}" export-globals)"
+
+# 环境变量覆盖 YAML 默认值
 MODEL_BASE="${MODEL_BASE:-/data/l50044498/models}"
-BENCH_BASE_DIR="${BENCH_BASE_DIR:-.}"
-
-# 服务端口
-SERVER_PORT=8080
-SERVER_HOST="127.0.0.1"
+export MODEL_BASE
 
 # vLLM 环境变量
 export VLLM_USE_V1=1
+export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES}"
 
-# Ascend NPU 环境变量
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-
-# 时间戳, 用于区分多次实验
+# 时间戳 (区分多次实验)
 RUN_TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 
-# Profiling 控制 (默认关闭, profiling 会严重拖慢推理, 性能数字不准)
+# 输出目录: ./outputs/<timestamp>/  (在执行脚本的工作目录下)
+RUN_DIR="./outputs/${RUN_TIMESTAMP}"
+RESULT_DIR="${RUN_DIR}/results"
+LOG_DIR="${RUN_DIR}/logs"
+PROFILING_DIR="${RUN_DIR}/profiles"
+
+# Profiling (默认关闭)
 ENABLE_PROFILING=false
-PROFILING_BASE_DIR="${BENCH_BASE_DIR}/benchmark_profiles/${RUN_TIMESTAMP}"
 
-# 结果输出目录 (每次实验独立子目录, 不覆盖)
-RESULT_DIR="${BENCH_BASE_DIR}/benchmark_results/${RUN_TIMESTAMP}"
-LOG_DIR="${BENCH_BASE_DIR}/benchmark_logs/${RUN_TIMESTAMP}"
-
-# Benchmark 模式
-#   offline = 用 vllm bench throughput, 直接调用 LLM.generate(), 不走 HTTP
-#             支持 n=8 (每 prompt 多次采样), 高并发, 最接近 verl rollout 的真实行为
-#   online  = 用 vllm bench serve, 走 HTTP 在线服务, 支持 profiling 采集
-#             但并发受 max-concurrency 限制, 不支持 n 参数, 不能完全模拟 rollout
-BENCH_MODE="offline"
-
-# Benchmark 负载参数
-# 目标: 用相同负载对比 BF16 vs W8A16 vs W8A8 的 throughput 差异
-INPUT_LEN=512
-OUTPUT_LEN=256
-NUM_PROMPTS=32                  # per-GPU prompt 数
-NUM_SAMPLES_PER_PROMPT=8        # 每 prompt 生成 n 个采样, 仅 offline 模式有效
-MAX_CONCURRENCY=128             # 仅 online 模式有效
-REQUEST_RATE="inf"              # 仅 online 模式有效
-
-# Ascend 图模式 Bucket 配置 (与 input_len 对齐)
-BUCKET_MIN=512
-BUCKET_MAX=512
-
-# Server 等待超时 (秒)
+# Server
+SERVER_HOST="127.0.0.1"
 SERVER_WAIT_TIMEOUT=600
 
-# 诊断模式标志
+# 诊断模式
 DIAGNOSTIC_MODE=false
 
-# 不采集 profiling 标志
-NO_PROFILE=false
-
-# 用户指定的实验子集
+# CLI 覆盖变量
 USER_MODELS=""
 USER_QUANTS=""
 GPU_MEMORY_UTILIZATION_OVERRIDE=""
@@ -171,121 +151,48 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%H:%M:%S') $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%H:%M:%S') $*"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC}  $(date '+%H:%M:%S') $*"; }
 
-# ======================== 实验矩阵定义 ========================
+# ======================== YAML 配置驱动的模型查询 ========================
 
-# 模型配置 (只配模型路径、TP、显存等硬件相关参数)
-# 负载参数 (input_len, output_len, num_prompts) 用全局配置, 保证公平对比
-declare_model_config() {
-    # --- Qwen3-1.7B ---
-    QWEN3_1_7B_DISPLAY="Qwen3-1.7B"
-    QWEN3_1_7B_PATH_BF16="${MODEL_BASE}/qwen3-1.7b"
-    QWEN3_1_7B_PATH_W8A16="${MODEL_BASE}/qwen3-1.7b-W8A16"
-    QWEN3_1_7B_PATH_W8A8="${MODEL_BASE}/qwen3-1.7b-W8A8D"
-    QWEN3_1_7B_TP=1
-    QWEN3_1_7B_GPU_MEM_UTIL=0.4
+# 配置文件路径 (和脚本同目录)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_YAML="${SCRIPT_DIR}/config.yaml"
 
-    # --- Pangu-7B ---
-    PANGU_7B_DISPLAY="Pangu-7B"
-    PANGU_7B_PATH_BF16="${MODEL_BASE}/openPangu-Embedded-7B-V1.1"
-    PANGU_7B_PATH_W8A16="${MODEL_BASE}/openPangu-Embedded-7B-V1.1-W8A16"
-    PANGU_7B_PATH_W8A8="${MODEL_BASE}/openPangu-Embedded-7B-V1.1-W8A8D"
-    PANGU_7B_TP=1
-    PANGU_7B_GPU_MEM_UTIL=0.6
-
-    # --- Qwen3-30B-A3B (MoE) ---
-    QWEN3_30B_A3B_DISPLAY="Qwen3-30B-A3B"
-    QWEN3_30B_A3B_PATH_BF16="${MODEL_BASE}/Qwen3-30B-A3B-Instruct-2507"
-    QWEN3_30B_A3B_PATH_W8A8="${MODEL_BASE}/Qwen3-30B-A3B-Instruct-2507-W8A8D"
-    QWEN3_30B_A3B_TP=4
-    QWEN3_30B_A3B_GPU_MEM_UTIL=0.8
+# 调用 Python 解析 YAML 配置
+cfg() {
+    python3 "${SCRIPT_DIR}/config_parser.py" "${CONFIG_YAML}" "$@"
 }
 
-# 获取模型配置字段
-# 用法: get_model_field <model_key> <field>
-# field: DISPLAY, PATH_BF16, PATH_W8A16, PATH_W8A8, TP, MAX_MODEL_LEN, MAX_NUM_SEQS
+# 查询模型字段: display, tp, gpu_mem_util
 get_model_field() {
-    local model_key="$1"
-    local field="$2"
-    local var_name=""
-
-    case "$model_key" in
-        qwen3-1.7b)    var_name="QWEN3_1_7B_${field}" ;;
-        pangu-7b)       var_name="PANGU_7B_${field}" ;;
-        qwen3-30b-a3b) var_name="QWEN3_30B_A3B_${field}" ;;
-        *)
-            log_error "未知模型: $model_key"
-            return 1 ;;
-    esac
-    eval "echo \"\${${var_name}:-}\"" 2>/dev/null || echo ""
+    cfg get "$1" "$2"
 }
 
-# 获取对应量化精度的模型路径 (返回空字符串表示该组合不存在)
+# 查询模型路径 (空 = 该精度不存在)
 get_model_path() {
-    local model_key="$1"
-    local quant="$2"
-    local field=""
-    case "$quant" in
-        bf16)   field="PATH_BF16" ;;
-        w8a16)  field="PATH_W8A16" ;;
-        w8a8)   field="PATH_W8A8" ;;
-        *)
-            log_error "未知量化精度: $quant"
-            return 1 ;;
-    esac
-
-    local var_name=""
-    case "$model_key" in
-        qwen3-1.7b)    var_name="QWEN3_1_7B_${field}" ;;
-        pangu-7b)       var_name="PANGU_7B_${field}" ;;
-        qwen3-30b-a3b) var_name="QWEN3_30B_A3B_${field}" ;;
-        *)
-            log_error "未知模型: $model_key"
-            return 1 ;;
-    esac
-
-    # eval 兼容 bash 3.x + set -u, 变量未定义时返回空字符串
-    eval "echo \"\${${var_name}:-}\""
+    cfg get-path "$1" "$2"
 }
 
-# 获取模型的 gpu_memory_utilization
-# CLI --gpu-mem-util 覆盖 > per-model 配置 > 默认 0.9
+# 查询 gpu_memory_utilization (CLI 覆盖 > YAML 配置 > 默认 0.9)
 get_gpu_mem_util() {
-    local model_key="$1"
-
-    # CLI 覆盖优先
     if [[ -n "${GPU_MEMORY_UTILIZATION_OVERRIDE}" ]]; then
         echo "${GPU_MEMORY_UTILIZATION_OVERRIDE}"
-        return
+    else
+        local val
+        val=$(cfg get "$1" gpu_mem_util)
+        echo "${val:-0.9}"
     fi
-
-    # per-model 硬编码, 不依赖动态变量查找
-    case "$model_key" in
-        qwen3-1.7b)    echo "${QWEN3_1_7B_GPU_MEM_UTIL:-0.9}" ;;
-        pangu-7b)       echo "${PANGU_7B_GPU_MEM_UTIL:-0.9}" ;;
-        qwen3-30b-a3b) echo "${QWEN3_30B_A3B_GPU_MEM_UTIL:-0.9}" ;;
-        *)              echo "0.9" ;;
-    esac
 }
 
 # 判断某个 model+quant 组合是否应该跳过
-# 返回 0 表示应该跳过, 1 表示不跳过
 should_skip_experiment() {
-    local model_key="$1"
-    local quant="$2"
     local model_path
-    model_path=$(get_model_path "$model_key" "$quant")
-
-    # 路径为空 = 该组合未配置 (如 Qwen3-30B-A3B 没有 W8A16)
-    if [[ -z "$model_path" ]]; then
-        return 0
-    fi
-    return 1
+    model_path=$(get_model_path "$1" "$2")
+    [[ -z "$model_path" ]]
 }
 
-# 获取所有有效实验的列表 (格式: "model_key|quant" 每行一个)
+# 获取所有有效实验的列表
 get_valid_experiments() {
     local models=("$@")
-    # quants 从全局变量读取, 通过 _QUANTS 数组传入
     for model_key in "${models[@]}"; do
         for quant in "${_QUANTS[@]}"; do
             if ! should_skip_experiment "$model_key" "$quant"; then
@@ -295,18 +202,28 @@ get_valid_experiments() {
     done
 }
 
+# 从 YAML 获取所有模型 key 列表
+get_all_models() {
+    cfg list-models
+}
+
+# 从 YAML 获取所有出现过的量化精度列表
+get_all_quants() {
+    cfg list-all-quants
+}
+
 # ======================== 辅助函数 ========================
 
 # 初始化目录
 init_dirs() {
-    mkdir -p "${RESULT_DIR}" "${LOG_DIR}" "${PROFILING_BASE_DIR}"
+    mkdir -p "${RESULT_DIR}" "${LOG_DIR}"
 }
 
 # 获取实验的 profiling 目录
 get_profile_dir() {
     local model_key="$1"
     local quant="$2"
-    echo "${PROFILING_BASE_DIR}/${model_key}_${quant}"
+    echo "${PROFILING_DIR}/${model_key}_${quant}"
 }
 
 # 获取实验的结果文件路径
@@ -893,9 +810,7 @@ for k in keys:
     echo ""
     echo "================================================================"
     echo "  诊断完成"
-    echo "  结果目录: ${RESULT_DIR}"
-    echo "  日志目录: ${LOG_DIR}"
-    echo "  Profiling: ${diag_profile_dir}"
+    echo "  输出目录: ${RUN_DIR}"
     echo "================================================================"
 }
 
@@ -903,8 +818,12 @@ for k in keys:
 
 run_full_benchmark() {
     # 确定要跑的模型和量化精度
-    local models=("qwen3-1.7b" "pangu-7b" "qwen3-30b-a3b")
-    local quants=("bf16" "w8a16" "w8a8")
+    # 从 config.yaml 读取模型和量化列表
+    local models_str quants_str
+    models_str=$(get_all_models)
+    quants_str=$(get_all_quants)
+    local models=($models_str)
+    local quants=($quants_str)
 
     if [[ -n "$USER_MODELS" ]]; then
         IFS=',' read -ra models <<< "$USER_MODELS"
@@ -959,7 +878,7 @@ run_full_benchmark() {
     fi
     echo "  gpu_memory_utilization: per-model (1.7B=0.4, 7B=0.6, 30B=0.8)"
     echo "  Profiling: ${ENABLE_PROFILING}"
-    echo "  结果目录: ${RESULT_DIR}"
+    echo "  输出目录: ${RUN_DIR}"
     echo ""
 
     local run_start_time
@@ -1070,7 +989,11 @@ generate_summary_table() {
 # ======================== 主入口 ========================
 
 main() {
-    declare_model_config
+    # 验证配置文件存在
+    if [[ ! -f "$CONFIG_YAML" ]]; then
+        log_error "配置文件不存在: ${CONFIG_YAML}"
+        exit 1
+    fi
     init_dirs
 
     log_info "脚本启动: $(date '+%Y-%m-%d %H:%M:%S')"

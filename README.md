@@ -11,21 +11,9 @@ summarize_benchmark.py     # 结果分析: JSON → 对比表格 (txt/csv/markdo
 
 ## 环境变量
 
-使用前通过环境变量配置路径，避免修改脚本：
-
 ```bash
-# 必须: 模型根目录
+# 必须: 模型根目录 (也可在 config.yaml 中设置)
 export MODEL_BASE="/data/l50044498/models"
-
-# 可选: 结果/日志/profiling 输出的根目录 (默认: 当前目录)
-export BENCH_BASE_DIR="/home/l00861652/exps"
-```
-
-设好后，结果会输出到：
-```
-$BENCH_BASE_DIR/benchmark_results/   # JSON 结果 + 汇总表格
-$BENCH_BASE_DIR/benchmark_logs/      # 运行日志
-$BENCH_BASE_DIR/benchmark_profiles/  # Torch profiling 数据
 ```
 
 ## 快速开始
@@ -51,7 +39,7 @@ bash run_vllm_benchmark.sh
 
 ```bash
 # 跑完自动生成; 也可手动重新生成:
-python3 summarize_benchmark.py $BENCH_BASE_DIR/benchmark_results --markdown
+python3 summarize_benchmark.py outputs/<timestamp>/results --markdown
 ```
 
 ## 两种 Benchmark 模式
@@ -138,18 +126,21 @@ bash run_vllm_benchmark.sh --online --num-prompts 64
 
 模型路径在 `run_vllm_benchmark.sh` 的 `declare_model_config()` 中配置。如果某个模型没有某种精度的权重 (如 Qwen3-30B-A3B 无 W8A16)，不定义对应路径变量即可，脚本自动跳过。
 
-## 输出文件
+## 输出目录
+
+每次运行在工作目录下创建 `outputs/<timestamp>/`，互不覆盖：
 
 ```
-$BENCH_BASE_DIR/
-├── benchmark_results/
-│   ├── qwen3-1.7b_bf16.json       # 原始结果
-│   ├── qwen3-1.7b_w8a16.json
-│   ├── summary.txt                 # 终端对比表格
-│   ├── summary.csv                 # Excel / pandas 用
-│   └── summary.md                  # 文档 / Issue 用
-├── benchmark_logs/                 # 运行日志
-└── benchmark_profiles/             # Torch profiling 数据
+outputs/
+└── 20260209_201500/            # 一次运行的全部输出
+    ├── results/                # JSON 结果 + 汇总表格
+    │   ├── qwen3-1.7b_bf16.json
+    │   ├── qwen3-1.7b_w8a16.json
+    │   ├── summary.txt
+    │   ├── summary.csv
+    │   └── summary.md
+    ├── logs/                   # Server 和 benchmark 运行日志
+    └── profiles/               # Torch profiling 数据 (--profile 时)
 ```
 
 ## Profiling 分析
@@ -157,7 +148,7 @@ $BENCH_BASE_DIR/
 ```python
 # Ascend NPU
 from torch_npu.profiler.profiler import analyse
-analyse(profiler_path="./benchmark_profiles/qwen3-1.7b_bf16")
+analyse(profiler_path="outputs/<timestamp>/profiles/qwen3-1.7b_bf16")
 ```
 
 或上传 trace 文件到 https://ui.perfetto.dev/ 可视化。
