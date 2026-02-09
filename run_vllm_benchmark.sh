@@ -16,8 +16,9 @@ set -euo pipefail
 
 # ======================== 默认配置 ========================
 
-# 模型根目录 (请按实际路径修改)
-MODEL_BASE="/data/l50044498/models"
+# 可通过环境变量预设, 脚本内为 fallback 默认值
+MODEL_BASE="${MODEL_BASE:-/data/l50044498/models}"
+BENCH_BASE_DIR="${BENCH_BASE_DIR:-.}"
 
 # 服务端口
 SERVER_PORT=8080
@@ -31,11 +32,11 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 # Profiling 控制
 ENABLE_PROFILING=true
-PROFILING_BASE_DIR="./benchmark_profiles"
+PROFILING_BASE_DIR="${BENCH_BASE_DIR}/benchmark_profiles"
 
 # 结果输出目录
-RESULT_DIR="./benchmark_results"
-LOG_DIR="./benchmark_logs"
+RESULT_DIR="${BENCH_BASE_DIR}/benchmark_results"
+LOG_DIR="${BENCH_BASE_DIR}/benchmark_logs"
 
 # Benchmark 模式
 #   offline = 用 vllm bench throughput, 直接调用 LLM.generate(), 不走 HTTP
@@ -89,7 +90,7 @@ print_usage() {
     echo "  --gpu-mem-util F      GPU 显存占用比例 (默认: per-model, 设置后覆盖所有模型)"
     echo "  --max-concurrency N   最大并发数 (默认: ${MAX_CONCURRENCY}, 仅 online)"
     echo "  --port PORT           服务端口 (默认: ${SERVER_PORT}, 仅 online)"
-    echo "  --model-base DIR      模型根目录 (默认: ${MODEL_BASE})"
+    echo "  --model-base DIR      模型根目录 (或设环境变量 MODEL_BASE, 默认: ${MODEL_BASE})"
     echo "  -h, --help            显示帮助信息"
 }
 
@@ -207,7 +208,8 @@ get_model_field() {
             log_error "未知模型: $model_key"
             return 1 ;;
     esac
-    echo "${!var_name}"
+    # eval 兼容 bash 3.x + set -u, 变量未定义时返回空字符串
+    eval "echo \"\${${var_name}:-}\""
 }
 
 # 获取对应量化精度的模型路径 (返回空字符串表示该组合不存在)
@@ -234,8 +236,8 @@ get_model_path() {
             return 1 ;;
     esac
 
-    # 安全获取: 变量未定义时返回空字符串, 不触发 set -u
-    echo "${!var_name:-}"
+    # eval 兼容 bash 3.x + set -u, 变量未定义时返回空字符串
+    eval "echo \"\${${var_name}:-}\""
 }
 
 # 获取模型的 gpu_memory_utilization (CLI override > per-model config > 默认 0.9)
