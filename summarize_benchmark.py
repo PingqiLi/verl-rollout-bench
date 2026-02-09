@@ -42,26 +42,59 @@ from pathlib import Path
 #   - 同量化不同模型: 模型规模的性能 scaling
 # ============================================================
 
+# ============================================================
+# Offline (vllm bench throughput) 输出的 JSON key:
+#   elapsed_time, num_requests, total_num_tokens,
+#   requests_per_second, tokens_per_second
+#
+# Online (vllm bench serve) 输出的 JSON key:
+#   output_throughput, total_token_throughput, request_throughput,
+#   mean_ttft_ms, p99_ttft_ms, mean_tpot_ms, p99_tpot_ms, ...
+#
+# 为了兼容两种格式, 加载时统一 key 名 (见 normalize_result)
+# ============================================================
+
+def normalize_result(data: dict) -> dict:
+    """统一 offline 和 online 两种 JSON 格式的 key 名."""
+    d = dict(data)
+
+    # offline → 统一命名
+    if "tokens_per_second" in d and "total_token_throughput" not in d:
+        d["total_token_throughput"] = d["tokens_per_second"]
+    if "requests_per_second" in d and "request_throughput" not in d:
+        d["request_throughput"] = d["requests_per_second"]
+
+    # offline 没有 output_throughput, 用 total 近似
+    # (offline 用 ignore_eos=True, output_len 固定, 所以 total ≈ input + output)
+    if "output_throughput" not in d and "tokens_per_second" in d:
+        # 尝试计算: output_tokens / elapsed_time
+        elapsed = d.get("elapsed_time", 0)
+        total_tokens = d.get("total_num_tokens", 0)
+        num_requests = d.get("num_requests", 0)
+        if elapsed > 0 and total_tokens > 0:
+            d["output_throughput"] = d["tokens_per_second"]  # 近似值
+
+    return d
+
+
 # (json_key, display_name, format_str, higher_is_better)
 METRICS = [
-    ("output_throughput",      "Output Tput (tok/s)", "{:.1f}",  True),
     ("total_token_throughput", "Total Tput (tok/s)",  "{:.1f}",  True),
     ("request_throughput",     "Req Tput (req/s)",    "{:.2f}",  True),
+    ("elapsed_time",           "Elapsed (s)",         "{:.1f}",  False),
+    ("num_requests",           "Requests",            "{}",      None),
+    ("total_num_tokens",       "Total Tokens",        "{}",      None),
     ("mean_ttft_ms",           "TTFT Mean (ms)",      "{:.2f}",  False),
-    ("p99_ttft_ms",            "TTFT P99 (ms)",       "{:.2f}",  False),
     ("mean_tpot_ms",           "TPOT Mean (ms)",      "{:.2f}",  False),
-    ("p99_tpot_ms",            "TPOT P99 (ms)",       "{:.2f}",  False),
     ("mean_e2el_ms",           "E2EL Mean (ms)",      "{:.1f}",  False),
     ("p99_e2el_ms",            "E2EL P99 (ms)",       "{:.1f}",  False),
 ]
 
 # 用于加速比计算的核心子集
 SPEEDUP_METRICS = [
-    ("output_throughput", "Output Tput", True),
-    ("mean_ttft_ms",      "TTFT Mean",   False),
-    ("mean_tpot_ms",      "TPOT Mean",   False),
-    ("mean_e2el_ms",      "E2EL Mean",   False),
-    ("p99_e2el_ms",       "E2EL P99",    False),
+    ("total_token_throughput", "Total Tput", True),
+    ("request_throughput",     "Req Tput",   True),
+    ("elapsed_time",           "Elapsed",    False),
 ]
 
 
@@ -100,7 +133,7 @@ def load_results(result_dir: str) -> list[dict]:
             "model": model_key,
             "quant": quant.upper(),
             "file": fpath.name,
-            "data": data,
+            "data": normalize_result(data),
         })
 
     return results
@@ -118,13 +151,19 @@ def fmt_val(val, fmt_str: str) -> str:
 
 
 def build_main_table(results: list[dict]) -> list[str]:
-    """表格 1: 所有实验的指标一览."""
+    """表格 1: 所有实验的指标一览 (自动隐藏全 N/A 的列)."""
+    # 过滤掉所有实验都没有的指标列
+    all_keys = set()
+    for r in results:
+        all_keys.update(r["data"].keys())
+    active_metrics = [(k, d, f, h) for k, d, f, h in METRICS if k in all_keys]
+
     col_w = 15
     model_w = 20
     quant_w = 8
 
     header = f"{'Model':<{model_w}} {'Quant':<{quant_w}}"
-    for _, display, _, _ in METRICS:
+    for _, display, _, _ in active_metrics:
         header += f" {display:>{col_w}}"
 
     sep = "-" * len(header)
@@ -132,7 +171,6 @@ def build_main_table(results: list[dict]) -> list[str]:
         "",
         "=" * 80,
         "  verl RL Rollout 性能对比表",
-        "  (核心指标: Output Tput ↑ 和 E2EL P99 ↓)",
         "=" * 80,
         "",
         sep,
@@ -143,7 +181,7 @@ def build_main_table(results: list[dict]) -> list[str]:
     for r in results:
         d = r["data"]
         row = f"{r['model']:<{model_w}} {r['quant']:<{quant_w}}"
-        for key, _, fmt_str, _ in METRICS:
+        for key, _, fmt_str, _ in active_metrics:
             row += f" {fmt_val(d.get(key), fmt_str):>{col_w}}"
         lines.append(row)
 
@@ -236,19 +274,28 @@ def build_markdown(results: list[dict]) -> list[str]:
     lines = [
         "## verl RL Rollout 性能对比",
         "",
-        "> 核心指标: **Output Tput** (越高越好) 和 **E2EL P99** (越低越好)",
+        "> 核心指标: **Total Tput** (越高越好) 和 **Elapsed** (越低越好)",
         "",
     ]
 
-    # 表头
+    # 根据数据中实际存在的 key 动态选择列
+    # offline 有: total_token_throughput, request_throughput, elapsed_time
+    # online 还有: mean_ttft_ms, mean_tpot_ms, mean_e2el_ms, p99_e2el_ms
     md_metrics = [
-        ("output_throughput",  "Output Tput<br>(tok/s)", "{:.1f}"),
-        ("request_throughput", "Req Tput<br>(req/s)",    "{:.2f}"),
-        ("mean_ttft_ms",       "TTFT Mean<br>(ms)",      "{:.2f}"),
-        ("mean_tpot_ms",       "TPOT Mean<br>(ms)",      "{:.2f}"),
-        ("mean_e2el_ms",       "E2EL Mean<br>(ms)",      "{:.1f}"),
-        ("p99_e2el_ms",        "**E2EL P99**<br>(ms)",   "{:.1f}"),
+        ("total_token_throughput", "Total Tput<br>(tok/s)", "{:.1f}"),
+        ("request_throughput",     "Req Tput<br>(req/s)",   "{:.2f}"),
+        ("elapsed_time",           "Elapsed<br>(s)",        "{:.1f}"),
+        ("mean_ttft_ms",           "TTFT Mean<br>(ms)",     "{:.2f}"),
+        ("mean_tpot_ms",           "TPOT Mean<br>(ms)",     "{:.2f}"),
+        ("mean_e2el_ms",           "E2EL Mean<br>(ms)",     "{:.1f}"),
+        ("p99_e2el_ms",            "E2EL P99<br>(ms)",      "{:.1f}"),
     ]
+
+    # 只保留至少有一个实验包含该 key 的列
+    all_keys = set()
+    for r in results:
+        all_keys.update(r["data"].keys())
+    md_metrics = [(k, d, f) for k, d, f in md_metrics if k in all_keys]
 
     header = "| Model | Quant |"
     align  = "|:------|:------|"

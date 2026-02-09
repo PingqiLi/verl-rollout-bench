@@ -86,7 +86,7 @@ print_usage() {
     echo "  --online              在线服务模式: 走 HTTP, 支持 profiling 采集, 但并发受限"
     echo "  --no-profile          不采集 torch profiling (仅 online 模式有 profiling)"
     echo "  --models MODELS       逗号分隔的模型列表, 如: qwen3-1.7b,pangu-7b,qwen3-30b-a3b"
-    echo "  --quants QUANTS       逗号分隔的量化列表, 如: bf16,w8a16,w8a8"
+    echo "  --quants QUANTS       逗号分隔的量化列表, 如: bf16,w8a16,w8a8_dynamic"
     echo "  --input-len N         输入 prompt 长度 (默认: ${INPUT_LEN})"
     echo "  --output-len N        输出生成长度 (默认: ${OUTPUT_LEN})"
     echo "  --num-prompts N       请求数量 (默认: ${NUM_PROMPTS})"
