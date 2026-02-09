@@ -31,7 +31,7 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 # Profiling 控制
 ENABLE_PROFILING=true
-PROFILING_BASE_DIR="/home/l00861652/exps/benchmark_profiles"
+PROFILING_BASE_DIR="./benchmark_profiles"
 
 # 结果输出目录
 RESULT_DIR="./benchmark_results"
@@ -44,20 +44,12 @@ LOG_DIR="./benchmark_logs"
 #             但并发受 max-concurrency 限制, 不支持 n 参数, 不能完全模拟 rollout
 BENCH_MODE="offline"
 
-# verl rollout 参数
-# 注意: 以下默认值对齐 verl grpo_w8a16_qat.sh 的 rollout 配置
-#
-# verl 全局: train_batch_size=256, n=8 → 2048 sequences 总计
-# verl 分布: 8 GPUs, TP=1, DP=8 → 每 GPU 分到 32 prompts × 8 = 256 sequences
-# 所以 NUM_PROMPTS 默认为 per-GPU 值 (32), 精确模拟单卡负载
-#
-INPUT_LEN=512                   # verl: data.max_prompt_length=512
-OUTPUT_LEN=256                  # verl: data.max_response_length=256
-NUM_PROMPTS=32                  # verl: 256 / 8 GPUs = 32 prompts per GPU
-NUM_SAMPLES_PER_PROMPT=8        # verl: rollout.n=8, 仅 offline 模式有效
-# gpu_memory_utilization 默认为 per-model 配置 (见 declare_model_config())
-# 如果通过 --gpu-mem-util 指定, 则覆盖所有模型的值
-GPU_MEMORY_UTILIZATION_OVERRIDE=""
+# Benchmark 负载参数
+# 目标: 用相同负载对比 BF16 vs W8A16 vs W8A8 的 throughput 差异
+INPUT_LEN=512
+OUTPUT_LEN=256
+NUM_PROMPTS=32                  # per-GPU prompt 数
+NUM_SAMPLES_PER_PROMPT=8        # 每 prompt 生成 n 个采样, 仅 offline 模式有效
 MAX_CONCURRENCY=128             # 仅 online 模式有效
 REQUEST_RATE="inf"              # 仅 online 模式有效
 
@@ -94,7 +86,7 @@ print_usage() {
     echo "  --output-len N        输出生成长度 (默认: ${OUTPUT_LEN})"
     echo "  --num-prompts N       请求数量 (默认: ${NUM_PROMPTS})"
     echo "  -n N                  每个 prompt 生成 N 个采样 (默认: ${NUM_SAMPLES_PER_PROMPT}, 仅 offline)"
-    echo "  --gpu-mem-util F      GPU 显存占用比例 (默认: per-model, 覆盖所有模型)"
+    echo "  --gpu-mem-util F      GPU 显存占用比例 (默认: per-model, 设置后覆盖所有模型)"
     echo "  --max-concurrency N   最大并发数 (默认: ${MAX_CONCURRENCY}, 仅 online)"
     echo "  --port PORT           服务端口 (默认: ${SERVER_PORT}, 仅 online)"
     echo "  --model-base DIR      模型根目录 (默认: ${MODEL_BASE})"
@@ -172,23 +164,15 @@ log_step()  { echo -e "${CYAN}[STEP]${NC}  $(date '+%H:%M:%S') $*"; }
 
 # ======================== 实验矩阵定义 ========================
 
-# 每个模型的配置: display_name, bf16_path, w8a16_path, w8a8_path, tp_size, max_model_len, max_num_seqs
-# 请根据实际模型路径修改
+# 模型配置 (只配模型路径、TP、显存等硬件相关参数)
+# 负载参数 (input_len, output_len, num_prompts) 用全局配置, 保证公平对比
 declare_model_config() {
-    # gpu_memory_utilization 按模型大小设置, 模拟 verl 中与 actor 共享显存的真实约束
-    #   小模型 (1-2B):  actor 占用少, rollout 分 0.4
-    #   中模型 (7B):    actor 占用中, rollout 分 0.6
-    #   大模型 (30B+):  actor 占用多, rollout 分 0.8
-    #   更大模型:       预留 0.9
-
     # --- Qwen3-1.7B ---
     QWEN3_1_7B_DISPLAY="Qwen3-1.7B"
     QWEN3_1_7B_PATH_BF16="${MODEL_BASE}/qwen3-1.7b"
     QWEN3_1_7B_PATH_W8A16="${MODEL_BASE}/qwen3-1.7b-W8A16"
     QWEN3_1_7B_PATH_W8A8="${MODEL_BASE}/qwen3-1.7b-W8A8D"
     QWEN3_1_7B_TP=1
-    QWEN3_1_7B_MAX_MODEL_LEN=768
-    QWEN3_1_7B_MAX_NUM_SEQS=1024
     QWEN3_1_7B_GPU_MEM_UTIL=0.4
 
     # --- Pangu-7B ---
@@ -197,8 +181,6 @@ declare_model_config() {
     PANGU_7B_PATH_W8A16="${MODEL_BASE}/openPangu-Embedded-7B-V1.1-W8A16"
     PANGU_7B_PATH_W8A8="${MODEL_BASE}/openPangu-Embedded-7B-V1.1-W8A8D"
     PANGU_7B_TP=1
-    PANGU_7B_MAX_MODEL_LEN=768
-    PANGU_7B_MAX_NUM_SEQS=1024
     PANGU_7B_GPU_MEM_UTIL=0.6
 
     # --- Qwen3-30B-A3B (MoE) ---
@@ -206,8 +188,6 @@ declare_model_config() {
     QWEN3_30B_A3B_PATH_BF16="${MODEL_BASE}/Qwen3-30B-A3B-Instruct-2507"
     QWEN3_30B_A3B_PATH_W8A8="${MODEL_BASE}/Qwen3-30B-A3B-Instruct-2507-W8A8D"
     QWEN3_30B_A3B_TP=4
-    QWEN3_30B_A3B_MAX_MODEL_LEN=768
-    QWEN3_30B_A3B_MAX_NUM_SEQS=1024
     QWEN3_30B_A3B_GPU_MEM_UTIL=0.8
 }
 
@@ -470,10 +450,9 @@ start_server() {
     model_path=$(get_model_path "$model_key" "$quant")
     local tp_size
     tp_size=$(get_model_field "$model_key" "TP")
-    local max_model_len
-    max_model_len=$(get_model_field "$model_key" "MAX_MODEL_LEN")
-    local max_num_seqs
-    max_num_seqs=$(get_model_field "$model_key" "MAX_NUM_SEQS")
+    local gpu_mem_util
+    gpu_mem_util=$(get_gpu_mem_util "$model_key")
+    local max_model_len=$((INPUT_LEN + OUTPUT_LEN))
     local display_name
     display_name=$(get_model_field "$model_key" "DISPLAY")
     local server_log
@@ -481,7 +460,7 @@ start_server() {
 
     log_step "拉起 Server: ${display_name} / ${quant^^}"
     log_info "  模型路径: ${model_path}"
-    log_info "  TP: ${tp_size}, max_model_len: ${max_model_len}, max_num_seqs: ${max_num_seqs}"
+    log_info "  TP: ${tp_size}, max_model_len: ${max_model_len}, gpu_mem: ${gpu_mem_util}"
 
     # 检查模型路径是否存在
     if [[ ! -d "$model_path" ]]; then
@@ -501,10 +480,7 @@ start_server() {
     server_cmd+=" --tensor-parallel-size ${tp_size}"
     server_cmd+=" --dtype bfloat16"
     server_cmd+=" --max-model-len ${max_model_len}"
-    server_cmd+=" --max-num-seqs ${max_num_seqs}"
     server_cmd+=" --trust-remote-code"
-    local gpu_mem_util
-    gpu_mem_util=$(get_gpu_mem_util "$model_key")
     server_cmd+=" --gpu-memory-utilization ${gpu_mem_util}"
     server_cmd+=" --disable-log-requests"
     server_cmd+=" --enable-chunked-prefill False"
@@ -584,10 +560,9 @@ run_benchmark_offline() {
     display_name=$(get_model_field "$model_key" "DISPLAY")
     local tp_size
     tp_size=$(get_model_field "$model_key" "TP")
-    local max_model_len
-    max_model_len=$(get_model_field "$model_key" "MAX_MODEL_LEN")
-    local max_num_seqs
-    max_num_seqs=$(get_model_field "$model_key" "MAX_NUM_SEQS")
+    local gpu_mem_util
+    gpu_mem_util=$(get_gpu_mem_util "$model_key")
+    local max_model_len=$((INPUT_LEN + OUTPUT_LEN))
     local result_file
     result_file=$(get_result_file "$model_key" "$quant")
     local bench_log
@@ -595,7 +570,8 @@ run_benchmark_offline() {
 
     local total_seqs=$((num_prompts * NUM_SAMPLES_PER_PROMPT))
     log_step "运行 Offline Benchmark: ${display_name} / ${quant^^}"
-    log_info "  ${num_prompts} prompts × n=${NUM_SAMPLES_PER_PROMPT} = ${total_seqs} 并发序列"
+    log_info "  ${num_prompts} prompts × n=${NUM_SAMPLES_PER_PROMPT} = ${total_seqs} 序列"
+    log_info "  input=${INPUT_LEN}, output=${OUTPUT_LEN}, gpu_mem=${gpu_mem_util}"
 
     # 构建环境变量
     local env_prefix=""
@@ -625,9 +601,6 @@ run_benchmark_offline() {
     bench_cmd+=" --dtype bfloat16"
     bench_cmd+=" --tensor-parallel-size ${tp_size}"
     bench_cmd+=" --max-model-len ${max_model_len}"
-    bench_cmd+=" --max-num-seqs ${max_num_seqs}"
-    local gpu_mem_util
-    gpu_mem_util=$(get_gpu_mem_util "$model_key")
     bench_cmd+=" --gpu-memory-utilization ${gpu_mem_util}"
     bench_cmd+=" --trust-remote-code"
     bench_cmd+=" --enable-chunked-prefill False"
@@ -961,11 +934,7 @@ run_full_benchmark() {
     else
         echo "  请求数量: ${NUM_PROMPTS}, 最大并发: ${MAX_CONCURRENCY}"
     fi
-    if [[ -n "$GPU_MEMORY_UTILIZATION_OVERRIDE" ]]; then
-        echo "  gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION_OVERRIDE} (全局覆盖)"
-    else
-        echo "  gpu_memory_utilization: per-model (1.7B=0.4, 7B=0.6, 30B=0.8, 更大=0.9)"
-    fi
+    echo "  gpu_memory_utilization: per-model (1.7B=0.4, 7B=0.6, 30B=0.8)"
     echo "  Profiling: ${ENABLE_PROFILING}"
     echo "  结果目录: ${RESULT_DIR}"
     echo ""
