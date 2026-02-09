@@ -55,7 +55,9 @@ INPUT_LEN=512                   # verl: data.max_prompt_length=512
 OUTPUT_LEN=256                  # verl: data.max_response_length=256
 NUM_PROMPTS=32                  # verl: 256 / 8 GPUs = 32 prompts per GPU
 NUM_SAMPLES_PER_PROMPT=8        # verl: rollout.n=8, 仅 offline 模式有效
-GPU_MEMORY_UTILIZATION=0.4      # verl: rollout.gpu_memory_utilization=0.4
+# gpu_memory_utilization 默认为 per-model 配置 (见 declare_model_config())
+# 如果通过 --gpu-mem-util 指定, 则覆盖所有模型的值
+GPU_MEMORY_UTILIZATION_OVERRIDE=""
 MAX_CONCURRENCY=128             # 仅 online 模式有效
 REQUEST_RATE="inf"              # 仅 online 模式有效
 
@@ -92,7 +94,7 @@ print_usage() {
     echo "  --output-len N        输出生成长度 (默认: ${OUTPUT_LEN})"
     echo "  --num-prompts N       请求数量 (默认: ${NUM_PROMPTS})"
     echo "  -n N                  每个 prompt 生成 N 个采样 (默认: ${NUM_SAMPLES_PER_PROMPT}, 仅 offline)"
-    echo "  --gpu-mem-util F      GPU 显存占用比例 (默认: ${GPU_MEMORY_UTILIZATION})"
+    echo "  --gpu-mem-util F      GPU 显存占用比例 (默认: per-model, 覆盖所有模型)"
     echo "  --max-concurrency N   最大并发数 (默认: ${MAX_CONCURRENCY}, 仅 online)"
     echo "  --port PORT           服务端口 (默认: ${SERVER_PORT}, 仅 online)"
     echo "  --model-base DIR      模型根目录 (默认: ${MODEL_BASE})"
@@ -132,7 +134,7 @@ while [[ $# -gt 0 ]]; do
             NUM_SAMPLES_PER_PROMPT="$2"
             shift 2 ;;
         --gpu-mem-util)
-            GPU_MEMORY_UTILIZATION="$2"
+            GPU_MEMORY_UTILIZATION_OVERRIDE="$2"
             shift 2 ;;
         --max-concurrency)
             MAX_CONCURRENCY="$2"
@@ -173,6 +175,12 @@ log_step()  { echo -e "${CYAN}[STEP]${NC}  $(date '+%H:%M:%S') $*"; }
 # 每个模型的配置: display_name, bf16_path, w8a16_path, w8a8_path, tp_size, max_model_len, max_num_seqs
 # 请根据实际模型路径修改
 declare_model_config() {
+    # gpu_memory_utilization 按模型大小设置, 模拟 verl 中与 actor 共享显存的真实约束
+    #   小模型 (1-2B):  actor 占用少, rollout 分 0.4
+    #   中模型 (7B):    actor 占用中, rollout 分 0.6
+    #   大模型 (30B+):  actor 占用多, rollout 分 0.8
+    #   更大模型:       预留 0.9
+
     # --- Qwen3-1.7B ---
     QWEN3_1_7B_DISPLAY="Qwen3-1.7B"
     QWEN3_1_7B_PATH_BF16="${MODEL_BASE}/qwen3-1.7b"
@@ -180,9 +188,8 @@ declare_model_config() {
     QWEN3_1_7B_PATH_W8A8="${MODEL_BASE}/qwen3-1.7b-W8A8D"
     QWEN3_1_7B_TP=1
     QWEN3_1_7B_MAX_MODEL_LEN=768
-    # max_num_seqs 对齐 verl 默认值 1024, 确保引擎能同时调度足够多的序列
-    # 实际并发还受 KV cache 内存限制, 引擎会自动调整
     QWEN3_1_7B_MAX_NUM_SEQS=1024
+    QWEN3_1_7B_GPU_MEM_UTIL=0.4
 
     # --- Pangu-7B ---
     PANGU_7B_DISPLAY="Pangu-7B"
@@ -192,6 +199,7 @@ declare_model_config() {
     PANGU_7B_TP=1
     PANGU_7B_MAX_MODEL_LEN=768
     PANGU_7B_MAX_NUM_SEQS=1024
+    PANGU_7B_GPU_MEM_UTIL=0.6
 
     # --- Qwen3-30B-A3B (MoE) ---
     QWEN3_30B_A3B_DISPLAY="Qwen3-30B-A3B"
@@ -200,6 +208,7 @@ declare_model_config() {
     QWEN3_30B_A3B_TP=4
     QWEN3_30B_A3B_MAX_MODEL_LEN=768
     QWEN3_30B_A3B_MAX_NUM_SEQS=1024
+    QWEN3_30B_A3B_GPU_MEM_UTIL=0.8
 }
 
 # 获取模型配置字段
@@ -247,6 +256,18 @@ get_model_path() {
 
     # 安全获取: 变量未定义时返回空字符串, 不触发 set -u
     echo "${!var_name:-}"
+}
+
+# 获取模型的 gpu_memory_utilization (CLI override > per-model config > 默认 0.9)
+get_gpu_mem_util() {
+    local model_key="$1"
+    if [[ -n "$GPU_MEMORY_UTILIZATION_OVERRIDE" ]]; then
+        echo "$GPU_MEMORY_UTILIZATION_OVERRIDE"
+    else
+        local val
+        val=$(get_model_field "$model_key" "GPU_MEM_UTIL" 2>/dev/null || true)
+        echo "${val:-0.9}"
+    fi
 }
 
 # 判断某个 model+quant 组合是否应该跳过
@@ -482,7 +503,9 @@ start_server() {
     server_cmd+=" --max-model-len ${max_model_len}"
     server_cmd+=" --max-num-seqs ${max_num_seqs}"
     server_cmd+=" --trust-remote-code"
-    server_cmd+=" --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION}"
+    local gpu_mem_util
+    gpu_mem_util=$(get_gpu_mem_util "$model_key")
+    server_cmd+=" --gpu-memory-utilization ${gpu_mem_util}"
     server_cmd+=" --disable-log-requests"
     server_cmd+=" --enable-chunked-prefill False"
 
@@ -603,7 +626,9 @@ run_benchmark_offline() {
     bench_cmd+=" --tensor-parallel-size ${tp_size}"
     bench_cmd+=" --max-model-len ${max_model_len}"
     bench_cmd+=" --max-num-seqs ${max_num_seqs}"
-    bench_cmd+=" --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION}"
+    local gpu_mem_util
+    gpu_mem_util=$(get_gpu_mem_util "$model_key")
+    bench_cmd+=" --gpu-memory-utilization ${gpu_mem_util}"
     bench_cmd+=" --trust-remote-code"
     bench_cmd+=" --enable-chunked-prefill False"
     bench_cmd+=" --output-json ${result_file}"
@@ -936,7 +961,11 @@ run_full_benchmark() {
     else
         echo "  请求数量: ${NUM_PROMPTS}, 最大并发: ${MAX_CONCURRENCY}"
     fi
-    echo "  gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}"
+    if [[ -n "$GPU_MEMORY_UTILIZATION_OVERRIDE" ]]; then
+        echo "  gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION_OVERRIDE} (全局覆盖)"
+    else
+        echo "  gpu_memory_utilization: per-model (1.7B=0.4, 7B=0.6, 30B=0.8, 更大=0.9)"
+    fi
     echo "  Profiling: ${ENABLE_PROFILING}"
     echo "  结果目录: ${RESULT_DIR}"
     echo ""
