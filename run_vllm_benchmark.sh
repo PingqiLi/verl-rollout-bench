@@ -30,13 +30,16 @@ export VLLM_USE_V1=1
 # Ascend NPU 环境变量
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
+# 时间戳, 用于区分多次实验
+RUN_TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
+
 # Profiling 控制
 ENABLE_PROFILING=true
-PROFILING_BASE_DIR="${BENCH_BASE_DIR}/benchmark_profiles"
+PROFILING_BASE_DIR="${BENCH_BASE_DIR}/benchmark_profiles/${RUN_TIMESTAMP}"
 
-# 结果输出目录
-RESULT_DIR="${BENCH_BASE_DIR}/benchmark_results"
-LOG_DIR="${BENCH_BASE_DIR}/benchmark_logs"
+# 结果输出目录 (每次实验独立子目录, 不覆盖)
+RESULT_DIR="${BENCH_BASE_DIR}/benchmark_results/${RUN_TIMESTAMP}"
+LOG_DIR="${BENCH_BASE_DIR}/benchmark_logs/${RUN_TIMESTAMP}"
 
 # Benchmark 模式
 #   offline = 用 vllm bench throughput, 直接调用 LLM.generate(), 不走 HTTP
@@ -493,7 +496,7 @@ start_server() {
     server_cmd+=" --trust-remote-code"
     server_cmd+=" --gpu-memory-utilization ${gpu_mem_util}"
     server_cmd+=" --disable-log-requests"
-    server_cmd+=" --enable-chunked-prefill False"
+    server_cmd+=" --no-enable-chunked-prefill"
 
     # W8A16 / W8A8 需要指定量化方式
     if [[ "$quant" != "bf16" ]]; then
@@ -619,7 +622,7 @@ run_benchmark_offline() {
     bench_cmd+=" --max-model-len ${max_model_len}"
     bench_cmd+=" --gpu-memory-utilization ${gpu_mem_util}"
     bench_cmd+=" --trust-remote-code"
-    bench_cmd+=" --enable-chunked-prefill False"
+    bench_cmd+=" --no-enable-chunked-prefill"
     bench_cmd+=" --output-json ${result_file}"
     bench_cmd+=" ${profile_flag}"
 
