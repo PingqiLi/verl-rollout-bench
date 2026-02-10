@@ -383,12 +383,12 @@ start_server() {
     local model_path
     model_path=$(get_model_path "$model_key" "$quant")
     local tp_size
-    tp_size=$(get_model_field "$model_key" "TP")
+    tp_size=$(get_model_field "$model_key" "tp")
     local gpu_mem_util
     gpu_mem_util=$(get_gpu_mem_util "$model_key")
     local max_model_len=$((INPUT_LEN + OUTPUT_LEN))
     local display_name
-    display_name=$(get_model_field "$model_key" "DISPLAY")
+    display_name=$(get_model_field "$model_key" "display")
     local server_log
     server_log=$(get_server_log "$model_key" "$quant")
 
@@ -491,9 +491,9 @@ run_benchmark_offline() {
     local model_path
     model_path=$(get_model_path "$model_key" "$quant")
     local display_name
-    display_name=$(get_model_field "$model_key" "DISPLAY")
+    display_name=$(get_model_field "$model_key" "display")
     local tp_size
-    tp_size=$(get_model_field "$model_key" "TP")
+    tp_size=$(get_model_field "$model_key" "tp")
     local gpu_mem_util
     gpu_mem_util=$(get_gpu_mem_util "$model_key")
     local max_model_len=$((INPUT_LEN + OUTPUT_LEN))
@@ -502,9 +502,13 @@ run_benchmark_offline() {
     local bench_log
     bench_log=$(get_bench_log "$model_key" "$quant")
 
-    # 安全检查: gpu_mem_util 不能为空
+    # 安全检查: 关键变量不能为空
+    if [[ -z "${tp_size}" ]]; then
+        log_warn "tp 未配置 (model_key=${model_key}), 使用默认 1"
+        tp_size="1"
+    fi
     if [[ -z "${gpu_mem_util}" ]]; then
-        log_error "get_gpu_mem_util 返回空值 (model_key=${model_key}), 使用默认 0.9"
+        log_warn "gpu_mem_util 未配置 (model_key=${model_key}), 使用默认 0.9"
         gpu_mem_util="0.9"
     fi
 
@@ -581,7 +585,7 @@ run_benchmark_online() {
     local model_path
     model_path=$(get_model_path "$model_key" "$quant")
     local display_name
-    display_name=$(get_model_field "$model_key" "DISPLAY")
+    display_name=$(get_model_field "$model_key" "display")
     local result_file
     result_file=$(get_result_file "$model_key" "$quant")
     local bench_log
@@ -665,7 +669,7 @@ run_single_experiment() {
     local quant="$2"
     local num_prompts="$3"
     local display_name
-    display_name=$(get_model_field "$model_key" "DISPLAY")
+    display_name=$(get_model_field "$model_key" "display")
 
     echo ""
     echo "================================================================"
@@ -851,7 +855,7 @@ run_full_benchmark() {
         for quant in "${quants[@]}"; do
             if should_skip_experiment "$model_key" "$quant"; then
                 local skip_display
-                skip_display=$(get_model_field "$model_key" "DISPLAY")
+                skip_display=$(get_model_field "$model_key" "display")
                 skipped_experiments+=("${skip_display}/${quant^^}")
             fi
         done
@@ -894,7 +898,7 @@ run_full_benchmark() {
             # 跳过未配置的组合
             if should_skip_experiment "$model_key" "$quant"; then
                 local skip_display
-                skip_display=$(get_model_field "$model_key" "DISPLAY")
+                skip_display=$(get_model_field "$model_key" "display")
                 log_warn "跳过: ${skip_display} / ${quant^^} (未配置该量化精度的模型路径)"
                 skip_count=$((skip_count + 1))
                 continue
@@ -902,7 +906,7 @@ run_full_benchmark() {
 
             exp_index=$((exp_index + 1))
             local display_name
-            display_name=$(get_model_field "$model_key" "DISPLAY")
+            display_name=$(get_model_field "$model_key" "display")
 
             echo ""
             log_info "========== 实验 ${exp_index}/${total_experiments}: ${display_name} / ${quant^^} =========="
