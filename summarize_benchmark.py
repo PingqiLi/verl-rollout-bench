@@ -16,6 +16,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 from collections import OrderedDict
@@ -54,7 +55,78 @@ from pathlib import Path
 # 为了兼容两种格式, 加载时统一 key 名 (见 normalize_result)
 # ============================================================
 
-def normalize_result(data: dict) -> dict:
+def _to_float(val):
+    """安全转换为 float."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isfinite(f):
+            return f
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _infer_output_tput(
+    d: dict,
+    *,
+    default_input_len: int,
+    default_output_len: int,
+) -> tuple[float | None, str | None]:
+    """
+    推断 output throughput.
+
+    返回:
+      (value, source)
+      source:
+        - "measured": JSON 原生 output_throughput
+        - "derived_total_output_elapsed": 用 total_output_tokens / elapsed_time
+        - "derived_numreq_outputlen_elapsed": 用 num_requests * output_len / elapsed_time
+        - "derived_ratio_from_total": 用 output/(input+output) 比例从 total 近似
+    """
+    measured = _to_float(d.get("output_throughput"))
+    if measured is not None and measured > 0:
+        return measured, "measured"
+
+    elapsed = _to_float(d.get("elapsed_time"))
+    total_output_tokens = _to_float(d.get("total_output_tokens"))
+    if elapsed and elapsed > 0 and total_output_tokens and total_output_tokens > 0:
+        return total_output_tokens / elapsed, "derived_total_output_elapsed"
+
+    total_tput = (
+        _to_float(d.get("total_token_throughput"))
+        or _to_float(d.get("tokens_per_second"))
+    )
+    num_requests = _to_float(d.get("num_requests"))
+    output_len = _to_float(d.get("output_len")) or _to_float(d.get("random_output_len"))
+    input_len = _to_float(d.get("input_len")) or _to_float(d.get("random_input_len"))
+
+    if elapsed and elapsed > 0 and num_requests and num_requests > 0:
+        # 若结果中没记录 input/output 长度, 退回脚本默认配置
+        if output_len is None:
+            output_len = float(default_output_len)
+        if output_len > 0:
+            return (num_requests * output_len) / elapsed, "derived_numreq_outputlen_elapsed"
+
+    if total_tput and total_tput > 0:
+        if input_len is None:
+            input_len = float(default_input_len)
+        if output_len is None:
+            output_len = float(default_output_len)
+        total_len = input_len + output_len
+        if total_len > 0 and output_len > 0:
+            return total_tput * (output_len / total_len), "derived_ratio_from_total"
+
+    return None, None
+
+
+def normalize_result(
+    data: dict,
+    *,
+    default_input_len: int,
+    default_output_len: int,
+) -> dict:
     """统一 offline 和 online 两种 JSON 格式的 key 名."""
     d = dict(data)
 
@@ -64,26 +136,23 @@ def normalize_result(data: dict) -> dict:
     if "requests_per_second" in d and "request_throughput" not in d:
         d["request_throughput"] = d["requests_per_second"]
 
-    # offline 没有 output_throughput, 用 total 近似
-    # (offline 用 ignore_eos=True, output_len 固定, 所以 total ≈ input + output)
-    if "output_throughput" not in d and "tokens_per_second" in d:
-        # 尝试计算: output_tokens / elapsed_time
-        elapsed = d.get("elapsed_time", 0)
-        total_tokens = d.get("total_num_tokens", 0)
-        num_requests = d.get("num_requests", 0)
-        if elapsed > 0 and total_tokens > 0:
-            d["output_throughput"] = d["tokens_per_second"]  # 近似值
+    output_tput, source = _infer_output_tput(
+        d,
+        default_input_len=default_input_len,
+        default_output_len=default_output_len,
+    )
+    if output_tput is not None:
+        d["output_throughput"] = output_tput
+        d["output_throughput_source"] = source
 
     return d
 
 
 # (json_key, display_name, format_str, higher_is_better)
 METRICS = [
+    ("output_throughput",      "Output Tput (tok/s)", "{:.1f}",  True),
     ("total_token_throughput", "Total Tput (tok/s)",  "{:.1f}",  True),
-    ("request_throughput",     "Req Tput (req/s)",    "{:.2f}",  True),
     ("elapsed_time",           "Elapsed (s)",         "{:.1f}",  False),
-    ("num_requests",           "Requests",            "{}",      None),
-    ("total_num_tokens",       "Total Tokens",        "{}",      None),
     ("mean_ttft_ms",           "TTFT Mean (ms)",      "{:.2f}",  False),
     ("mean_tpot_ms",           "TPOT Mean (ms)",      "{:.2f}",  False),
     ("mean_e2el_ms",           "E2EL Mean (ms)",      "{:.1f}",  False),
@@ -92,15 +161,20 @@ METRICS = [
 
 # 用于加速比计算的核心子集
 SPEEDUP_METRICS = [
+    ("output_throughput",      "Output Tput", True),
     ("total_token_throughput", "Total Tput", True),
-    ("request_throughput",     "Req Tput",   True),
     ("elapsed_time",           "Elapsed",    False),
 ]
 
 
 # ======================== 数据加载 ========================
 
-def load_results(result_dir: str) -> list[dict]:
+def load_results(
+    result_dir: str,
+    *,
+    default_input_len: int,
+    default_output_len: int,
+) -> list[dict]:
     """从 result_dir 下读取所有 benchmark JSON 文件."""
     results = []
     skip_files = {"summary.csv", "summary.txt", "summary.md"}
@@ -133,7 +207,11 @@ def load_results(result_dir: str) -> list[dict]:
             "model": model_key,
             "quant": quant.upper(),
             "file": fpath.name,
-            "data": normalize_result(data),
+            "data": normalize_result(
+                data,
+                default_input_len=default_input_len,
+                default_output_len=default_output_len,
+            ),
         })
 
     return results
@@ -186,6 +264,16 @@ def build_main_table(results: list[dict]) -> list[str]:
         lines.append(row)
 
     lines.append(sep)
+    output_sources = sorted({
+        r["data"].get("output_throughput_source")
+        for r in results
+        if r["data"].get("output_throughput_source")
+    })
+    if output_sources:
+        lines.append("")
+        lines.append("Output Tput 来源:")
+        for src in output_sources:
+            lines.append(f"  - {src}")
     return lines
 
 
@@ -274,7 +362,7 @@ def build_markdown(results: list[dict]) -> list[str]:
     lines = [
         "## verl RL Rollout 性能对比",
         "",
-        "> 核心指标: **Total Tput** (越高越好) 和 **Elapsed** (越低越好)",
+        "> 核心指标: **Output Tput** / **Total Tput** (越高越好) 和 **Elapsed** (越低越好)",
         "",
     ]
 
@@ -282,8 +370,8 @@ def build_markdown(results: list[dict]) -> list[str]:
     # offline 有: total_token_throughput, request_throughput, elapsed_time
     # online 还有: mean_ttft_ms, mean_tpot_ms, mean_e2el_ms, p99_e2el_ms
     md_metrics = [
+        ("output_throughput",      "Output Tput<br>(tok/s)", "{:.1f}"),
         ("total_token_throughput", "Total Tput<br>(tok/s)", "{:.1f}"),
-        ("request_throughput",     "Req Tput<br>(req/s)",   "{:.2f}"),
         ("elapsed_time",           "Elapsed<br>(s)",        "{:.1f}"),
         ("mean_ttft_ms",           "TTFT Mean<br>(ms)",     "{:.2f}"),
         ("mean_tpot_ms",           "TPOT Mean<br>(ms)",     "{:.2f}"),
@@ -365,6 +453,18 @@ def build_markdown(results: list[dict]) -> list[str]:
 
         lines.append("")
 
+    output_sources = sorted({
+        r["data"].get("output_throughput_source")
+        for r in results
+        if r["data"].get("output_throughput_source")
+    })
+    if output_sources:
+        lines.append("### Output Tput 来源")
+        lines.append("")
+        for src in output_sources:
+            lines.append(f"- `{src}`")
+        lines.append("")
+
     return lines
 
 
@@ -388,6 +488,18 @@ def main():
         help="benchmark 结果 JSON 文件所在目录 (默认: ./benchmark_results)",
     )
     parser.add_argument(
+        "--default-input-len",
+        type=int,
+        default=512,
+        help="结果缺少长度字段时用于估算 Output Tput 的默认 input_len (默认: 512)",
+    )
+    parser.add_argument(
+        "--default-output-len",
+        type=int,
+        default=256,
+        help="结果缺少长度字段时用于估算 Output Tput 的默认 output_len (默认: 256)",
+    )
+    parser.add_argument(
         "--csv", action="store_true", default=True,
         help="输出 CSV 文件 (默认开启)",
     )
@@ -404,7 +516,11 @@ def main():
     result_dir = args.result_dir
 
     # 加载数据
-    results = load_results(result_dir)
+    results = load_results(
+        result_dir,
+        default_input_len=args.default_input_len,
+        default_output_len=args.default_output_len,
+    )
     if not results:
         print("[WARN] 未找到有效的 benchmark 结果文件, 跳过汇总")
         sys.exit(0)
