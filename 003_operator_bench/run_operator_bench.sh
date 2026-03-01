@@ -135,6 +135,13 @@ for sweep_file in "${RUN_DIR}"/sweep_*.json; do
         --markdown >> "${RUN_DIR}/analysis.md"
 done
 
+
+# 生成论证报告
+log_info "生成论证报告..."
+python3 "${SCRIPT_DIR}/generate_report.py" "${RUN_DIR}" \
+    --output "${RUN_DIR}/report.md" 2>&1
+log_ok "报告: ${RUN_DIR}/report.md"
+
 # ======================== 完成 ========================
 echo ""
 log_ok "完成! 结果目录: ${RUN_DIR}"
