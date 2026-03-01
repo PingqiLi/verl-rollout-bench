@@ -114,7 +114,7 @@ def bench_grouped_matmul_w8a8(M: int, K: int, N: int,
     x = torch.randn(total_tokens, K, dtype=torch.bfloat16, device="npu")
     w_int8 = torch.randint(-128, 127, (num_experts, K, N),
                            dtype=torch.int8, device="npu")
-    w_scale = torch.randn(num_experts, N, dtype=torch.float32, device="npu")
+    w_scale = torch.randn(num_experts, N, dtype=torch.bfloat16, device="npu")
 
     group_list = torch.full((num_experts,), M,
                             dtype=torch.int64, device="npu")
@@ -201,7 +201,7 @@ def bench_dense_matmul_w8a8(M: int, K: int, N: int,
     w_int8 = torch.randint(-128, 127, (N, K), dtype=torch.int8, device="npu")
     # 转置 + NZ format (模拟 process_weights_after_loading)
     w_int8 = w_int8.transpose(0, 1).contiguous()
-    w_scale = torch.randn(N, dtype=torch.float32, device="npu")
+    w_scale = torch.randn(N, dtype=torch.bfloat16, device="npu")
 
     for _ in range(warmup):
         qx, pscale = torch_npu.npu_dynamic_quant(x)
