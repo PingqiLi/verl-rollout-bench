@@ -7,6 +7,9 @@ set -euo pipefail
 # Qwen3-30B-A3B 上对比 BF16 vs W8A8D 在不同 decode 长度下的纯 decode 吞吐.
 # input_len=1, output_len 从 256 扫到 16384, n=8.
 #
+# 自动检测 NPU 数量: 若设备数 >= 2×TP, 则同一 output_len 下
+# 不同精度并行运行在不同设备组上 (如 bf16→0,1,2,3  w8a8→4,5,6,7).
+#
 # 用法:
 #   bash run_sweep.sh                          # 默认参数
 #   bash run_sweep.sh --num-prompts 8          # 减少 prompt 数
@@ -45,7 +48,7 @@ INPUT_LEN=1
 NUM_PROMPTS=32
 NUM_SAMPLES=8
 GPU_MEM_UTIL_OVERRIDE=""
-ASCEND_DEVICES="0,1,2,3,4,5,6,7"
+ASCEND_DEVICES=""   # 空 = 自动检测
 
 # ======================== 参数解析 ========================
 show_help() {
@@ -55,13 +58,16 @@ show_help() {
 Decode 长度 Sweep: Qwen3-30B-A3B 上 BF16 vs W8A8D 纯 decode 吞吐对比
 input_len=1 (纯 decode), sweep output_len = 256..16384
 
+自动检测 NPU 数量, 若设备数 >= 2×TP 则不同精度并行运行.
+例: 8 NPU / tp=4 → bf16 和 w8a8 同时跑在不同设备组上, 耗时减半.
+
 选项:
   --num-prompts N         prompt 数量 (默认: ${NUM_PROMPTS})
   -n N                    每 prompt 采样数 (默认: ${NUM_SAMPLES})
   --output-lens "L1 L2"   自定义 output_len 列表 (默认: "256 512 1024 2048 4096 8192 16384")
   --model-base DIR        模型根目录 (也可用 MODEL_BASE 环境变量)
   --gpu-mem-util F        覆盖 GPU 显存比例 (默认: 从 config.yaml 读取)
-  --devices D             Ascend 设备列表 (默认: ${ASCEND_DEVICES})
+  --devices D             NPU 设备列表 (默认: 自动检测)
   -h, --help              显示帮助
 
 注意:
@@ -69,9 +75,10 @@ input_len=1 (纯 decode), sweep output_len = 256..16384
   如遇 OOM, 用 --num-prompts 降低并发, 或 --gpu-mem-util 0.9 放宽显存限制.
 
 示例:
-  bash run_sweep.sh                                    # 全量 sweep
+  bash run_sweep.sh                                    # 全量 sweep (自动并行)
   bash run_sweep.sh --num-prompts 8 --gpu-mem-util 0.9 # 长序列友好配置
   bash run_sweep.sh --output-lens "256 1024 4096"      # 只跑三个点
+  bash run_sweep.sh --devices 0,1,2,3                  # 手动指定 4 卡 (串行)
 EOF
 }
 
@@ -107,6 +114,106 @@ get_model_path() {
     cfg get-path "${MODEL_KEY}" "${quant}"
 }
 
+# ======================== NPU 自动检测 ========================
+
+detect_devices() {
+    # 优先使用用户指定的 --devices
+    if [[ -n "${ASCEND_DEVICES}" ]]; then
+        return
+    fi
+
+    # 1. 环境变量
+    if [[ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+        ASCEND_DEVICES="${ASCEND_RT_VISIBLE_DEVICES}"
+        return
+    fi
+
+    # 2. npu-smi 自动检测
+    if command -v npu-smi &>/dev/null; then
+        local npu_count
+        npu_count=$(npu-smi info -l 2>/dev/null \
+            | grep -oP 'Total Count\s*:\s*\K\d+' || echo "")
+        if [[ -n "${npu_count}" && "${npu_count}" -gt 0 ]]; then
+            ASCEND_DEVICES=$(seq -s, 0 $((npu_count - 1)))
+            return
+        fi
+    fi
+
+    # 3. /dev/davinci* 设备文件
+    local dev_count
+    dev_count=$(ls /dev/davinci[0-9]* 2>/dev/null | wc -l || echo "0")
+    if [[ "${dev_count}" -gt 0 ]]; then
+        ASCEND_DEVICES=$(seq -s, 0 $((dev_count - 1)))
+        return
+    fi
+
+    # 兜底: 8 卡
+    ASCEND_DEVICES="0,1,2,3,4,5,6,7"
+}
+
+# 根据设备数和 TP 计算并行 slot + 设备分组
+# DEVICE_GROUPS[0]="0,1,2,3"  DEVICE_GROUPS[1]="4,5,6,7"
+setup_parallelism() {
+    detect_devices
+
+    IFS=',' read -ra DEVICES_ARR <<< "${ASCEND_DEVICES}"
+    NUM_DEVICES=${#DEVICES_ARR[@]}
+    NUM_SLOTS=$((NUM_DEVICES / TP_SIZE))
+
+    DEVICE_GROUPS=()
+    for ((i = 0; i < NUM_SLOTS; i++)); do
+        local start=$((i * TP_SIZE))
+        local group=""
+        for ((j = 0; j < TP_SIZE; j++)); do
+            [[ -n "${group}" ]] && group+=","
+            group+="${DEVICES_ARR[$((start + j))]}"
+        done
+        DEVICE_GROUPS+=("${group}")
+    done
+
+    # 并行数不超过 quant 数
+    PARALLEL_SLOTS=${NUM_SLOTS}
+    if [[ ${PARALLEL_SLOTS} -gt ${#QUANTS[@]} ]]; then
+        PARALLEL_SLOTS=${#QUANTS[@]}
+    fi
+}
+
+# ======================== 进程清理 ========================
+
+# 递归杀掉进程树
+kill_process_tree() {
+    local pid="$1"
+    local signal="${2:-TERM}"
+
+    local children
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    for child in $children; do
+        kill_process_tree "$child" "$signal"
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -"$signal" "$pid" 2>/dev/null || true
+    fi
+}
+
+# 清理残留的 vllm benchmark 进程
+cleanup_stale_workers() {
+    local pids
+    pids=$(pgrep -f "vllm.entrypoints.cli.main bench" 2>/dev/null || true)
+    if [[ -n "${pids}" ]]; then
+        log_warn "清理残留 vllm 进程: ${pids}"
+        for pid in ${pids}; do
+            kill_process_tree "$pid" "KILL"
+        done
+        sleep 3
+    fi
+}
+
+cleanup() {
+    cleanup_stale_workers
+}
+trap cleanup EXIT
+
 # ======================== 输出目录 ========================
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RUN_DIR="${SCRIPT_DIR}/outputs/${TIMESTAMP}"
@@ -127,6 +234,8 @@ save_experiment_config() {
     "num_prompts": ${NUM_PROMPTS},
     "num_samples_per_prompt": ${NUM_SAMPLES},
     "quants": ["$(IFS='","'; echo "${QUANTS[*]}")"],
+    "devices": "${ASCEND_DEVICES}",
+    "parallel_slots": ${PARALLEL_SLOTS},
     "timestamp": "${TIMESTAMP}",
     "note": "ignore_eos=True (vllm 内部硬编码), 输出长度确定"
 }
@@ -137,6 +246,7 @@ EXPEOF
 run_single() {
     local quant="$1"
     local output_len="$2"
+    local devices="$3"
 
     local model_path
     model_path=$(get_model_path "${quant}")
@@ -147,20 +257,12 @@ run_single() {
     fi
 
     local max_model_len=$((INPUT_LEN + output_len))
-    local total_seqs=$((NUM_PROMPTS * NUM_SAMPLES))
     local result_file="${RESULT_DIR}/${quant}_olen${output_len}.json"
     local bench_log="${LOG_DIR}/${quant}_olen${output_len}.log"
 
-    log_info "  ${NUM_PROMPTS} prompts × n=${NUM_SAMPLES} = ${total_seqs} 序列"
-    log_info "  input=${INPUT_LEN}, output=${output_len}, max_model_len=${max_model_len}"
-
-    # 环境变量
-    local env_prefix=""
-    env_prefix+="VLLM_USE_V1=1 "
-    env_prefix+="ASCEND_RT_VISIBLE_DEVICES=${ASCEND_DEVICES} "
-
-    # vllm bench throughput 命令
-    local bench_cmd="python3 -m vllm.entrypoints.cli.main bench throughput"
+    # 构建命令
+    local bench_cmd="VLLM_USE_V1=1 ASCEND_RT_VISIBLE_DEVICES=${devices}"
+    bench_cmd+=" python3 -m vllm.entrypoints.cli.main bench throughput"
     bench_cmd+=" --model ${model_path}"
     bench_cmd+=" --dataset-name random"
     bench_cmd+=" --input-len ${INPUT_LEN}"
@@ -175,24 +277,20 @@ run_single() {
     bench_cmd+=" --no-enable-chunked-prefill"
     bench_cmd+=" --output-json ${result_file}"
 
-    # W8A8 量化
     if [[ "${quant}" != "bf16" ]]; then
         bench_cmd+=" --quantization ascend"
     fi
 
-    log_info "  命令: ${bench_cmd}"
-
-    if eval "${env_prefix} ${bench_cmd}" 2>&1 | tee "${bench_log}"; then
-        log_ok "  完成: ${result_file}"
+    if eval "${bench_cmd}" > "${bench_log}" 2>&1; then
         return 0
     else
-        log_error "  失败! 查看日志: ${bench_log}"
         return 1
     fi
 }
 
 # ======================== 主循环 ========================
 main() {
+    setup_parallelism
     save_experiment_config
 
     log_info "=============================================="
@@ -202,6 +300,15 @@ main() {
     log_info "参数: input_len=${INPUT_LEN}, n=${NUM_SAMPLES}, num_prompts=${NUM_PROMPTS}"
     log_info "Sweep: output_len = ${OUTPUT_LENS[*]}"
     log_info "精度: ${QUANTS[*]}"
+    log_info "设备: ${ASCEND_DEVICES} (${NUM_DEVICES} NPU)"
+    if [[ ${PARALLEL_SLOTS} -gt 1 ]]; then
+        log_info "并行: ${PARALLEL_SLOTS} 组同时运行 (${NUM_DEVICES} NPU / tp=${TP_SIZE})"
+        for i in "${!DEVICE_GROUPS[@]}"; do
+            log_info "  slot ${i}: devices ${DEVICE_GROUPS[$i]}"
+        done
+    else
+        log_info "串行: ${NUM_DEVICES} NPU / tp=${TP_SIZE}, 逐个运行"
+    fi
     log_info "输出: ${RUN_DIR}"
     log_info "注: vllm 内部 ignore_eos=True, 输出长度严格确定"
     echo ""
@@ -214,21 +321,56 @@ main() {
     for output_len in "${OUTPUT_LENS[@]}"; do
         log_step "output_len = ${output_len}"
 
-        for quant in "${QUANTS[@]}"; do
-            run_idx=$((run_idx + 1))
-            local run_tag="${quant}_olen${output_len}"
+        if [[ ${PARALLEL_SLOTS} -gt 1 ]]; then
+            # ---- 并行: 不同精度同时跑在不同设备组 ----
+            local pids=()
+            local tags=()
+            local group_idx=0
 
-            log_step "[${run_idx}/${total_runs}] ${DISPLAY_NAME} / ${quant^^} / output_len=${output_len}"
+            for quant in "${QUANTS[@]}"; do
+                run_idx=$((run_idx + 1))
+                local run_tag="${quant}_olen${output_len}"
+                tags+=("${run_tag}")
 
-            if run_single "${quant}" "${output_len}"; then
-                succeeded_runs+=("${run_tag}")
-            else
-                failed_runs+=("${run_tag}")
-            fi
+                log_info "  [${run_idx}/${total_runs}] ${quant^^} → devices ${DEVICE_GROUPS[$group_idx]}"
 
-            # 等待 GPU 内存释放
-            sleep 5
-        done
+                run_single "${quant}" "${output_len}" "${DEVICE_GROUPS[$group_idx]}" &
+                pids+=($!)
+                group_idx=$(( (group_idx + 1) % ${#DEVICE_GROUPS[@]} ))
+            done
+
+            # 等待所有并行任务完成
+            for i in "${!pids[@]}"; do
+                if wait "${pids[$i]}"; then
+                    log_ok "  ${tags[$i]} 完成 (日志: ${LOG_DIR}/${tags[$i]}.log)"
+                    succeeded_runs+=("${tags[$i]}")
+                else
+                    log_error "  ${tags[$i]} 失败 (日志: ${LOG_DIR}/${tags[$i]}.log)"
+                    failed_runs+=("${tags[$i]}")
+                fi
+            done
+
+            cleanup_stale_workers
+        else
+            # ---- 串行: 逐个运行 ----
+            for quant in "${QUANTS[@]}"; do
+                run_idx=$((run_idx + 1))
+                local run_tag="${quant}_olen${output_len}"
+
+                log_step "[${run_idx}/${total_runs}] ${DISPLAY_NAME} / ${quant^^} / output_len=${output_len}"
+                log_info "  devices: ${DEVICE_GROUPS[0]}"
+
+                if run_single "${quant}" "${output_len}" "${DEVICE_GROUPS[0]}"; then
+                    log_ok "  ${run_tag} 完成"
+                    succeeded_runs+=("${run_tag}")
+                else
+                    log_error "  ${run_tag} 失败 (日志: ${LOG_DIR}/${run_tag}.log)"
+                    failed_runs+=("${run_tag}")
+                fi
+
+                cleanup_stale_workers
+            done
+        fi
     done
 
     # ======================== 汇总 ========================

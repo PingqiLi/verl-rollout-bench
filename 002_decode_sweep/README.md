@@ -21,6 +21,9 @@ export MODEL_BASE="/data/l50044498/models"
 bash run_sweep.sh
 ```
 
+自动检测 NPU 数量: 若设备数 ≥ 2×TP, 不同精度并行跑在不同设备组上.
+例: 8 NPU / tp=4 → bf16 和 w8a8 同时跑, 耗时减半.
+
 ### 自定义参数
 
 ```bash
@@ -29,6 +32,9 @@ bash run_sweep.sh --num-prompts 8 --gpu-mem-util 0.9
 
 # 只跑部分数据点
 bash run_sweep.sh --output-lens "256 1024 4096 16384"
+
+# 手动指定 4 卡 (串行模式)
+bash run_sweep.sh --devices 0,1,2,3
 
 # 指定模型目录
 bash run_sweep.sh --model-base /path/to/models
@@ -68,4 +74,5 @@ python3 analyze_sweep.py outputs/<timestamp>/results --csv
 ## 注意事项
 
 - output_len ≥ 4096 时, 如遇 OOM, 用 `--num-prompts 8` 或 `--gpu-mem-util 0.9`
-- 每个数据点约需 1-5 分钟, 全量 sweep (7 × 2 = 14 次) 约需 30-60 分钟
+- 每个数据点约需 1-5 分钟; 并行模式下全量 sweep 约 15-30 分钟, 串行约 30-60 分钟
+- 每次跑完自动清理残留 vllm worker 进程
