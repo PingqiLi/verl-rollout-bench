@@ -53,23 +53,6 @@ MODELS = {
         "qk_rope_head_dim": 64,
         "v_head_dim": 128,
     },
-    "Qwen3-32B": {
-        "type": "dense",
-        "hidden_size": 4096,
-        "num_attention_heads": 64,
-        "num_key_value_heads": 8,        # GQA 8:1
-        "head_dim": 128,
-        "moe_intermediate_size": None,     # Dense 模型, 无 MoE
-        "num_experts": 0,
-        "num_experts_per_tok": 0,
-        "num_hidden_layers": 64,
-        "intermediate_size": 12288,       # SwiGLU FFN
-        "first_k_dense_replace": 64,      # 全部为 Dense 层
-        "n_shared_experts": 0,
-        "attention_type": "gqa",
-        "q_lora_rank": None,
-        "kv_lora_rank": None,
-    },
 }
 
 
@@ -86,8 +69,6 @@ def get_moe_shapes(model_name: str, decode_batch: int) -> list[dict]:
     返回: [{"name": str, "M": int, "K": int, "N": int, "count_per_layer": int, "num_layers": int}, ...]
     """
     cfg = MODELS[model_name]
-    if cfg["type"] == "dense" or cfg["num_experts"] == 0:
-        return []
     H = cfg["hidden_size"]
     I = cfg["moe_intermediate_size"]
     E = cfg["num_experts"]
@@ -196,7 +177,7 @@ def get_attention_shapes(model_name: str, decode_batch: int) -> list[dict]:
 
 
 def get_dense_ffn_shapes(model_name: str, decode_batch: int) -> list[dict]:
-    """获取 Dense FFN 层的 GEMM shape (718B 前3层, Qwen3-32B 全部64层)"""
+    """获取 Dense FFN 层的 GEMM shape (718B 前3层)"""
     cfg = MODELS[model_name]
     if cfg["first_k_dense_replace"] == 0:
         return []
@@ -219,7 +200,7 @@ def get_all_shapes(model_name: str, decode_batch: int = 256) -> dict:
     获取指定模型 decode 阶段所有线性层的 GEMM shape
 
     Args:
-        model_name: 模型名 ("Qwen3-30B-A3B", "Pangu-718B" 或 "Qwen3-32B")
+        model_name: 模型名 ("Qwen3-30B-A3B" 或 "Pangu-718B")
         decode_batch: decode 阶段并发序列数 (默认 256 = 32 prompts × n=8)
 
     Returns:
