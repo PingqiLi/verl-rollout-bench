@@ -16,12 +16,12 @@ set -euo pipefail
 
 # ======================== 配置加载 ========================
 
-# 配置文件和解析器路径 (与脚本同目录)
+# 配置文件和解析器路径 (位于项目根目录)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_YAML="${CONFIG_YAML:-${SCRIPT_DIR}/config.yaml}"
+CONFIG_YAML="${CONFIG_YAML:-${SCRIPT_DIR}/../config.yaml}"
 
 # 从 config.yaml 加载全局默认值 (环境变量可覆盖)
-eval "$(python3 "${SCRIPT_DIR}/config_parser.py" "${CONFIG_YAML}" export-globals)"
+eval "$(python3 \"${SCRIPT_DIR}/../config_parser.py\" \"${CONFIG_YAML}\" export-globals)"
 
 # 环境变量覆盖 YAML 默认值
 MODEL_BASE="${MODEL_BASE:-/data/l50044498/models}"
@@ -154,13 +154,13 @@ log_step()  { echo -e "${CYAN}[STEP]${NC}  $(date '+%H:%M:%S') $*"; }
 
 # ======================== YAML 配置驱动的模型查询 ========================
 
-# 配置文件路径 (和脚本同目录)
+# 配置文件路径 (位于项目根目录)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_YAML="${SCRIPT_DIR}/config.yaml"
+CONFIG_YAML="${SCRIPT_DIR}/../config.yaml"
 
 # 调用 Python 解析 YAML 配置
 cfg() {
-    python3 "${SCRIPT_DIR}/config_parser.py" "${CONFIG_YAML}" "$@"
+    python3 "${SCRIPT_DIR}/../config_parser.py" "${CONFIG_YAML}" "$@"
 }
 
 # 查询模型字段: display, tp, gpu_mem_util

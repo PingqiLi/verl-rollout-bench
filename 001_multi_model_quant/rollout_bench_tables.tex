@@ -1,0 +1,62 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{threeparttable}
+\usepackage{amsmath}
+\usepackage{caption}
+\usepackage{array}
+\usepackage{rotating}
+\captionsetup{font=small}
+
+\begin{document}
+
+\section*{GRPO Rollout Benchmark: Metrics and Table}
+
+\subsection*{Speedup Formula}
+\[
+\text{Speedup}=
+\frac{\text{OutputTput}_{\text{quant}}}{\text{OutputTput}_{\text{BF16}}}
+\approx
+\frac{\text{Elapsed}_{\text{BF16}}}{\text{Elapsed}_{\text{quant}}}
+\]
+\noindent
+Interpretation: $>1.00\times$ indicates improvement, $<1.00\times$ indicates regression.
+
+\subsection*{Merged Wide Table (Vertical Display)}
+\begin{sidewaystable}[htbp]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.12}
+\begin{threeparttable}
+\caption{Offline rollout benchmark: raw metrics and speedup (vs BF16)}
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.2cm} l r r r l l}
+\toprule
+Model & Quant & Output Tput & Total Tput & Elapsed & Speedup Output Tput & Speedup Elapsed \\
+ &  & (tokens/s) & (tokens/s) & (s) & ($\times$) & ($\times$) \\
+\midrule
+\texttt{Pangu-7B}      & BF16  & 507.3 & 5072.7 & 16.1 & (baseline) & (baseline) \\
+\texttt{Pangu-7B}      & W8A16 & 423.4 & 4234.0 & 19.3 & 0.83 $\downarrow$ & 0.83 $\downarrow$ \\
+\texttt{Pangu-7B}      & W8A8D & 589.2 & 5892.5 & 13.9 & 1.16 $\uparrow$ & 1.16 $\uparrow$ \\
+\midrule
+\texttt{Qwen3-1.7B}    & BF16  & 892.6 & 8926.4 & 9.2  & (baseline) & (baseline) \\
+\texttt{Qwen3-1.7B}    & W8A16 & 799.3 & 7993.0 & 10.2 & 0.90 $\downarrow$ & 0.90 $\downarrow$ \\
+\texttt{Qwen3-1.7B}    & W8A8D & 876.9 & 8769.5 & 9.3  & 0.98 $\downarrow$ & 0.98 $\downarrow$ \\
+\midrule
+\texttt{Qwen3-30B-A3B} & BF16  & 593.4 & 5933.7 & 13.8 & (baseline) & (baseline) \\
+\texttt{Qwen3-30B-A3B} & W8A8D & 529.7 & 5297.3 & 15.5 & 0.89 $\downarrow$ & 0.89 $\downarrow$ \\
+\midrule
+\texttt{Qwen3-32B}     & BF16  & 354.5 & 3545.5 & 23.1 & (baseline) & (baseline) \\
+\texttt{Qwen3-32B}     & W8A8D & 385.6 & 3856.0 & 21.2 & 1.09 $\uparrow$ & 1.09 $\uparrow$ \\
+\midrule
+\texttt{Qwen2.5-72B}   & BF16  & 188.7 & 1887.0 & 43.4 & (baseline) & (baseline) \\
+\texttt{Qwen2.5-72B}   & W8A8D & 220.2 & 2201.9 & 37.2 & 1.17 $\uparrow$ & 1.17 $\uparrow$ \\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}
+\footnotesize
+\item Speedup baseline is BF16 within each model.
+\end{tablenotes}
+\end{threeparttable}
+\end{sidewaystable}
+
+\end{document}
