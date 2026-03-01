@@ -182,8 +182,9 @@ def generate_report(results_dir: Path) -> str:
                              ("718B (K=7680, N=4096)", sweep_718b)]:
             if not sweep:
                 continue
-            results = sweep["results"]
-            K, N = sweep["K"], sweep["N"]
+            sweep_data = sweep["sweep_m"]
+            results = sweep_data["results"]
+            K, N = sweep_data["K"], sweep_data["N"]
 
             w(f"### {label}\n")
             w("| M | BF16 (ms) | W8A8D (ms) | Speedup | DQuant% | 备注 |")
