@@ -13,7 +13,7 @@
 | 编号 | 目录 | 说明 |
 |:---|:---|:---|
 | 001 | `001_multi_model_quant/` | 多模型 × 多精度吞吐对比 (原始实验) |
-| 002 | `002_decode_sweep/` | Decode 长度 Sweep: 不同 output_len 下 BF16 vs W8A8D 加速比 |
+| 002 | `002_decode_sweep/` | 模拟 GRPO Rollout: 混合 output_len 分布下 BF16 vs W8A8D |
 | 003 | `003_operator_bench/` | 单算子 Benchmark: 按真实 GEMM shape 对比 BF16 vs W8A8D |
 | 004 | `004_profiling/` | Profiling 采集: 算子级耗时对比 (torch_npu / msserviceprofiler) |
 
@@ -34,8 +34,8 @@ export MODEL_BASE="/data/l50044498/models"
 # 实验 001: 多模型吞吐对比
 bash 001_multi_model_quant/run_vllm_benchmark.sh
 
-# 实验 002: Decode 长度 Sweep
-bash 002_decode_sweep/run_sweep.sh
+# 实验 002: 模拟 GRPO Rollout
+bash 002_decode_sweep/run_rollout_bench.sh
 
 # 实验 004: Profiling 采集
 bash 004_profiling/profile_offline.sh
@@ -44,6 +44,6 @@ bash 004_profiling/profile_offline.sh
 ## 依赖
 
 - Python 3.10+ 、`pyyaml`
-- vLLM (with Ascend NPU support, v0.13.0+)
+- vLLM (with Ascend NPU support, v0.13.0+), `numpy`
 - 实验 003 需要 `torch_npu`
 - 实验 004 在线模式需要 `msserviceprofiler==1.2.2`

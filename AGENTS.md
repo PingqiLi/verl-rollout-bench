@@ -16,9 +16,10 @@ config_parser.py                     # YAML config parser, called by shell scrip
   summarize_benchmark.py             #   Result analysis: JSON → comparison tables (txt/csv/markdown)
   result.txt                         #   Sample benchmark results
   rollout_bench_tables.tex           #   LaTeX output table
-002_decode_sweep/                    # Experiment 002: decode length sweep (BF16 vs W8A8D)
-  run_sweep.sh                       #   Sweep output_len 256..16384 with input_len=1 (pure decode)
-  analyze_sweep.py                   #   Speedup vs output_len analysis
+002_decode_sweep/                    # Experiment 002: simulated GRPO rollout (mixed output_len)
+  rollout_bench.py                   #   Core benchmark: vLLM LLM.generate() with per-request SamplingParams
+  run_rollout_bench.sh               #   Shell orchestrator: BF16 vs W8A8D, NPU parallel, cleanup
+  analyze_rollout.py                 #   Result comparison: throughput, speedup
 003_operator_bench/                  # Experiment 003: single-operator benchmark (GEMM shapes)
   shapes.py                          #   Model GEMM shape definitions (30B-A3B, 718B)
   bench_ops.py                       #   BF16 vs W8A8D operator benchmark
