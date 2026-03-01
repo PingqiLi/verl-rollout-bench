@@ -171,18 +171,62 @@ def run_profiling(
     print(f"\nProfiling 完成!", file=sys.stderr)
     print(f"  采集 {len(outputs)} 个请求", file=sys.stderr)
 
-    # 等待 MP 后台进程写完 trace
+    # 等待 MP 后台进程写完原始数据
     print("  等待 trace 写入...", file=sys.stderr)
     time.sleep(5)
+
+    # ---- 离线解析 ----
+    # vLLM worker 是 daemon 进程, torch_npu 无法在 daemon 中解析 profiling 数据.
+    # 需要从主进程调用 analyse() 离线解析, 生成 trace_view.json.
+    _offline_analyse(output_dir)
 
     # ---- 报告输出文件 ----
     _report_trace_files(output_dir)
 
 
-def _report_trace_files(output_dir: str):
-    """扫描并报告 trace 文件."""
+def _offline_analyse(output_dir: str):
+    """
+    离线解析 Ascend profiling 原始数据.
+
+    vLLM worker 是 daemon 进程, torch_npu 无法在 daemon 中解析 profiling 数据.
+    从主进程调用 analyse() 将原始数据转换为 trace_view.json (Chrome Trace 格式).
+
+    输出: <worker_dir>/ASCEND_PROFILER_OUTPUT/trace_view.json
+    """
     trace_dir = Path(output_dir)
-    trace_files = sorted(trace_dir.rglob("*.pt.trace.json"))
+
+    # 检查是否有原始 profiling 数据 (worker-*_ascend_pt 目录)
+    raw_dirs = sorted(trace_dir.glob("worker-*_ascend_pt"))
+    if not raw_dirs:
+        print("  未找到原始 profiling 数据, 跳过离线解析", file=sys.stderr)
+        return
+
+    print(f"  离线解析 {len(raw_dirs)} 个 profiling 目录...", file=sys.stderr)
+
+    try:
+        from torch_npu.profiler.profiler import analyse
+        analyse(output_dir)
+        print("  离线解析完成", file=sys.stderr)
+    except ImportError:
+        print("  警告: torch_npu 不可用, 无法离线解析", file=sys.stderr)
+        print("  手动解析: from torch_npu.profiler.profiler import analyse; "
+              f"analyse('{output_dir}')", file=sys.stderr)
+    except Exception as e:
+        print(f"  离线解析失败: {e}", file=sys.stderr)
+        print("  手动解析: from torch_npu.profiler.profiler import analyse; "
+              f"analyse('{output_dir}')", file=sys.stderr)
+
+
+def _report_trace_files(output_dir: str):
+    """扫描并报告 trace 文件 (支持 .pt.trace.json 和 analyse() 生成的 trace_view.json)."""
+    trace_dir = Path(output_dir)
+
+    # 查找所有可用的 trace 文件
+    trace_files = sorted(set(
+        list(trace_dir.rglob("*.pt.trace.json"))
+        + list(trace_dir.rglob("*.pt.trace.json.gz"))
+        + list(trace_dir.rglob("trace_view.json"))
+    ))
 
     if trace_files:
         total_size = sum(f.stat().st_size for f in trace_files)
@@ -195,7 +239,8 @@ def _report_trace_files(output_dir: str):
         if len(trace_files) > 5:
             print(f"    ... 共 {len(trace_files)} 个文件", file=sys.stderr)
     else:
-        print(f"\n  警告: 未找到 *.pt.trace.json 文件", file=sys.stderr)
+        print(f"\n  警告: 未找到 trace 文件 (*.pt.trace.json / trace_view.json)",
+              file=sys.stderr)
         # 列出目录内容供排查
         all_files = sorted(trace_dir.rglob("*"))
         if all_files:
