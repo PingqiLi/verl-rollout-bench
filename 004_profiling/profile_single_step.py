@@ -2,39 +2,18 @@
 """
 单步 Profiling: 精确采集少量 decode step 的算子级 trace.
 
-取代 vllm bench throughput --profile 的粗粒度方式 (采集全部 step, 产生 GB 级 trace),
-本脚本仅采集极少量 step (默认 1 prefill + 1 decode), 数据量约 5-20 MB.
-
-工作原理:
+流程:
   1. 设置 VLLM_TORCH_PROFILER_DIR 环境变量 (必须在 import vllm 之前)
-  2. LLM() 加载模型, worker 中初始化 torch_npu.profiler (不开始采集)
-  3. generate() warmup 若干步 (graph capture + JIT 编译, 不采集)
+  2. LLM() 加载模型, worker 中初始化 torch_npu.profiler
+  3. generate() warmup 若干步 (graph capture + JIT, 不采集)
   4. start_profile() → generate(max_tokens=N) → stop_profile()
   5. trace 自动保存到 output_dir
 
-图模式:
-  V1 Engine 默认启用 ACLGraph. torch_npu.profiler 在 kernel 级别采集,
-  不受图模式影响, 每个 NPU kernel (npu_grouped_matmul 等) 独立可见.
-
-输出:
-  Chrome Trace JSON (*.pt.trace.json), 可在 Perfetto UI 或 MindStudio Insight 中查看,
-  也可用 analyze_profile.py 自动解析对比.
-
 用法:
-    # 直接指定模型路径 (BF16)
-    python3 profile_single_step.py --model /path/to/model --quant bf16
-
-    # 通过 config.yaml 指定
     python3 profile_single_step.py --model-key qwen3-30b-a3b --quant bf16
-
-    # W8A8D 量化
     python3 profile_single_step.py --model-key qwen3-30b-a3b --quant w8a8
-
-    # 自定义参数
     python3 profile_single_step.py --model /path/to/model --quant bf16 \\
         --batch-size 64 --warmup-steps 5 --tp 4
-
-    # Eager 模式 (对照实验)
     python3 profile_single_step.py --model-key qwen3-30b-a3b --quant bf16 --enforce-eager
 """
 

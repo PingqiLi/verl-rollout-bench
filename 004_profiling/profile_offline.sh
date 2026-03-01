@@ -5,23 +5,7 @@ set -euo pipefail
 # 离线 Profiling: 单步精确采集 (torch_npu profiler)
 #
 # 采集 Qwen3-30B-A3B decode 阶段的算子级 profiling 数据.
-# 分别采集 BF16 和 W8A8D, 用于逐层/逐算子耗时对比.
-#
-# 工作原理:
-#   调用 profile_single_step.py, 流程:
-#   1. LLM() 加载模型, 初始化 torch_npu.profiler (不开始采集)
-#   2. generate() warmup 若干步 (graph capture + JIT, 不采集)
-#   3. start_profile() → generate(max_tokens=N) → stop_profile()
-#   4. 仅采集 1 prefill + 1 decode step, 数据量约 5-20 MB
-#
-# 对比旧方案:
-#   旧方案用 vllm bench throughput --profile, 采集所有 step → GB 级 trace.
-#   新方案精确控制: warmup 后仅采集 1 步, 数据量减少 100x+.
-#
-# 图模式:
-#   V1 Engine 默认启用 ACLGraph (图模式).
-#   torch_npu.profiler 在 kernel 级别采集, 不受图模式影响,
-#   每个 NPU kernel (npu_grouped_matmul 等) 独立可见.
+# 调用 profile_single_step.py, 仅采集 1 prefill + 1 decode step.
 #
 # 用法:
 #   bash profile_offline.sh                    # 默认: 图模式, BF16 + W8A8
@@ -84,8 +68,6 @@ show_help() {
   --devices D            Ascend 设备列表
   -h, --help             显示帮助
 
-数据量:
-  默认参数下每个精度产生约 5-20 MB trace, 比旧方案 (GB 级) 小 100x+.
 
 示例:
   bash profile_offline.sh                         # 默认: BF16 + W8A8, 图模式

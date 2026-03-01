@@ -4,19 +4,12 @@ set -euo pipefail
 # ============================================================
 # Decode 长度 Sweep 实验
 #
-# 目的: 在 Qwen3-30B-A3B 上对比 BF16 vs W8A8D 在不同 decode 长度下
-#       的纯 decode 吞吐, 验证长尾 decode 对量化加速比的影响.
-#
-# 方法:
-#   - input_len=1: 消除 prefill, 近似纯 decode
-#   - output_len 从 256 扫到 16384: 覆盖 GRPO 中短回复到长尾回复
-#   - ignore_eos: vllm bench throughput 内部已硬编码 ignore_eos=True,
-#     输出长度严格等于 output_len, 不会提前终止
-#   - n=8: 模拟 GRPO rollout 的多采样
+# Qwen3-30B-A3B 上对比 BF16 vs W8A8D 在不同 decode 长度下的纯 decode 吞吐.
+# input_len=1, output_len 从 256 扫到 16384, n=8.
 #
 # 用法:
 #   bash run_sweep.sh                          # 默认参数
-#   bash run_sweep.sh --num-prompts 8          # 减少 prompt 数 (长序列防 OOM)
+#   bash run_sweep.sh --num-prompts 8          # 减少 prompt 数
 #   bash run_sweep.sh --output-lens "256 1024 4096"  # 自定义 sweep 范围
 # ============================================================
 

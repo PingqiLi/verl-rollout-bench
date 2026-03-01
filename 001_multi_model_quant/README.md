@@ -1,6 +1,4 @@
-# verl-rollout-bench
-
-在 Ascend NPU 上对比 BF16 / W8A16 / W8A8 低精度量化对 vLLM 推理吞吐的加速效果，面向 verl RL rollout 场景。
+# 多模型 × 多精度吞吐对比
 
 ## 文件
 
@@ -9,65 +7,20 @@ run_vllm_benchmark.sh      # 主控脚本: 实验编排、server 管理、profil
 summarize_benchmark.py     # 结果分析: JSON → 对比表格 (txt/csv/markdown)
 ```
 
-## 环境变量
-
-```bash
-# 必须: 模型根目录 (也可在 config.yaml 中设置)
-export MODEL_BASE="/data/l50044498/models"
-```
-
 ## 快速开始
 
-### 1. 诊断 (首次必跑, 验证环境)
-
 ```bash
 export MODEL_BASE="/data/l50044498/models"
+
+# 诊断 (首次验证环境)
 bash run_vllm_benchmark.sh --diagnostic
-```
 
-只跑 BF16 + Qwen3-1.7B，4 个 prompt，验证环境能跑通。
-
-### 2. 跑全量实验
-
-```bash
+# 全量实验
 bash run_vllm_benchmark.sh
-```
 
-默认跑 8 组 (3 模型 × 3 精度 - 1 个缺失组合)，自动生成对比表格。
-
-### 3. 查看结果
-
-```bash
-# 跑完自动生成; 也可手动重新生成:
+# 查看结果
 python3 summarize_benchmark.py outputs/<timestamp>/results --markdown
 ```
-
-## 两种 Benchmark 模式
-
-### Offline 模式 (默认, 推荐)
-
-```bash
-bash run_vllm_benchmark.sh --offline
-```
-
-直接调用 `LLM.generate()`，支持 `n=8` (每 prompt 多次采样)，最接近 verl rollout 的真实调用路径。**性能对比数据用这个模式。**
-
-### Online 模式
-
-```bash
-bash run_vllm_benchmark.sh --online
-```
-
-走 HTTP 服务，输出 TTFT / TPOT / ITL / E2EL 延迟指标。适合做延迟分析，但并发受限、不支持 `n` 参数，**不建议用于吞吐对比**。
-
-### 模式对比
-
-| | Offline (默认) | Online |
-|:---|:---|:---|
-| 原理 | `LLM.generate()` 直接推理 | HTTP server + client |
-| 支持 n=8 | 支持 | 不支持 |
-| 输出指标 | throughput (tok/s) | TTFT, TPOT, ITL, E2EL |
-| 用途 | **吞吐对比** | 延迟分析 |
 
 ## 命令行参数
 
@@ -75,8 +28,8 @@ bash run_vllm_benchmark.sh --online
 bash run_vllm_benchmark.sh [选项]
 
 模式:
-  --offline             [默认] 离线吞吐 benchmark
-  --online              在线服务 benchmark (延迟指标)
+  --offline             [默认] 离线吞吐 benchmark (LLM.generate(), 支持 n=8)
+  --online              在线服务 benchmark (延迟指标: TTFT/TPOT/ITL/E2EL)
   --diagnostic          快速诊断 (BF16 + Qwen3-1.7B, 4 prompts)
 
 实验选择:
@@ -118,48 +71,31 @@ bash run_vllm_benchmark.sh --online --num-prompts 64
 
 | 模型 | TP | gpu_memory_utilization | 备注 |
 |:---|:---|:---|:---|
-| Qwen3-1.7B | 1 | 0.4 | 小模型, verl 中 actor 占 60% |
+| Qwen3-1.7B | 1 | 0.4 | 小模型 |
 | Pangu-7B | 1 | 0.6 | 中模型 |
 | Qwen3-30B-A3B | 4 | 0.8 | MoE 大模型, 无 W8A16 |
 
-`gpu_memory_utilization` 按模型大小设置，模拟 verl 中 rollout 与 actor 共享显存的约束。用 `--gpu-mem-util 0.9` 可覆盖所有模型，测独立峰值性能。
-
-模型路径在 `run_vllm_benchmark.sh` 的 `declare_model_config()` 中配置。如果某个模型没有某种精度的权重 (如 Qwen3-30B-A3B 无 W8A16)，不定义对应路径变量即可，脚本自动跳过。
+模型路径在 `config.yaml` 中配置, 缺失精度的权重路径自动跳过.
 
 ## 输出目录
 
-每次运行在工作目录下创建 `outputs/<timestamp>/`，互不覆盖：
-
 ```
 outputs/
-└── 20260209_201500/            # 一次运行的全部输出
-    ├── results/                # JSON 结果 + 汇总表格
+└── 20260209_201500/
+    ├── results/
     │   ├── qwen3-1.7b_bf16.json
     │   ├── qwen3-1.7b_w8a16.json
     │   ├── summary.txt
     │   ├── summary.csv
     │   └── summary.md
-    ├── logs/                   # Server 和 benchmark 运行日志
-    └── profiles/               # Torch profiling 数据 (--profile 时)
+    ├── logs/
+    └── profiles/
 ```
-
-## Profiling 分析
-
-```python
-# Ascend NPU
-from torch_npu.profiler.profiler import analyse
-analyse(profiler_path="outputs/<timestamp>/profiles/qwen3-1.7b_bf16")
-```
-
-或上传 trace 文件到 https://ui.perfetto.dev/ 可视化。
-
-> Profiling 会显著拖慢推理。采集 profiling 时的数字**不能作为性能参考**。只需要吞吐数据时用 `--no-profile`。
 
 ## 故障排查
 
-| 问题 | 原因 | 解决 |
-|:---|:---|:---|
-| `No available memory for cache blocks` | 上一个实验进程未清理干净 | 脚本有进程树清理，也可手动 `kill` 残留 vllm 进程 |
-| `--gpu-memory-utilization: expected one argument` | bash 间接展开失败 | 已修复 (改用 eval) |
-| Server 启动超时 | 模型太大 / 显存不足 | 查看 `benchmark_logs/server_*.log` |
-| Profiling 目录为空 | 推理太快, 未来得及 flush | 增大 `--num-prompts` 或 `--output-len` |
+| 问题 | 解决 |
+|:---|:---|
+| `No available memory for cache blocks` | 手动 `kill` 残留 vllm 进程 |
+| Server 启动超时 | 查看 `logs/server_*.log` |
+| Profiling 目录为空 | 增大 `--num-prompts` 或 `--output-len` |
