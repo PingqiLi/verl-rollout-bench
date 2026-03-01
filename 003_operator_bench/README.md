@@ -4,10 +4,10 @@
 
 ```
 003_operator_bench/
-├── shapes.py          # 模型 GEMM shape 配置 (从 HF config.json 提取)
-├── bench_ops.py       # 单算子 benchmark 主脚本
-└── analyze.py         # 结果分析与对比
-```
+├── shapes.py              # 模型 GEMM shape 配置 (从 HF config.json 提取)
+├── bench_ops.py           # 单算子 benchmark 主脚本
+├── run_operator_bench.sh  # 一键运行: 全量 + M-sweep + 分析
+└── analyze.py             # 结果分析与对比
 
 ## 依赖
 
@@ -27,11 +27,23 @@
 
 ## 使用方式
 
-### 1. 查看 shape 信息
+### 一键运行 (推荐)
 
 ```bash
-python shapes.py
+bash run_operator_bench.sh
 ```
+
+自动执行: 全量 shape benchmark → M-sweep → 分析 + 对标 001 实测值.
+
+```bash
+# 自定义参数
+bash run_operator_bench.sh --repeats 200 --device 1
+
+# 跳过 M-sweep (只跑全量 shape)
+bash run_operator_bench.sh --skip-sweep
+```
+
+### 单独查看 shape
 
 ### 2. 运行 benchmark
 

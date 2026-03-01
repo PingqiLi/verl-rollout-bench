@@ -24,6 +24,7 @@ config_parser.py                     # YAML config parser, called by shell scrip
   shapes.py                          #   Model GEMM shape definitions (30B-A3B, 718B)
   bench_ops.py                       #   BF16 vs W8A8D operator benchmark
   analyze.py                         #   Results analysis with validation
+  run_operator_bench.sh               #   One-click: full benchmark + M-sweep + analysis
 004_profiling/                       # Experiment 004: operator-level profiling
   profile_offline.sh                 #   torch_npu profiler + vllm bench throughput
   profile_online.sh                  #   msserviceprofiler + vllm serve

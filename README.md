@@ -37,6 +37,9 @@ bash 001_multi_model_quant/run_vllm_benchmark.sh
 # 实验 002: 模拟 GRPO Rollout
 bash 002_decode_sweep/run_rollout_bench.sh
 
+# 实验 003: 单算子 Benchmark
+bash 003_operator_bench/run_operator_bench.sh
+
 # 实验 004: Profiling 采集
 bash 004_profiling/profile_offline.sh
 ```
