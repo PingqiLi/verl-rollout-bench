@@ -233,7 +233,7 @@ save_experiment_config() {
     "output_lens": [$(IFS=,; echo "${OUTPUT_LENS[*]}")],
     "num_prompts": ${NUM_PROMPTS},
     "num_samples_per_prompt": ${NUM_SAMPLES},
-    "quants": ["$(IFS='","'; echo "${QUANTS[*]}")"],
+    "quants": [$(printf '"%s", ' "${QUANTS[@]}" | sed 's/, $//')],
     "devices": "${ASCEND_DEVICES}",
     "parallel_slots": ${PARALLEL_SLOTS},
     "timestamp": "${TIMESTAMP}",
