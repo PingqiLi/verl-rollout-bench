@@ -17,11 +17,41 @@
 """
 
 import argparse
+import atexit
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+import signal
+
+
+# ======================== 进程清理 ========================
+
+def _kill_vllm_workers():
+    """杀死残留的 vLLM worker 子进程 (TP worker, EngineCore 等)."""
+    import signal as _sig
+    pid = os.getpid()
+    try:
+        # 杀死当前进程组的所有子进程
+        os.killpg(os.getpgid(pid), _sig.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    # 备用: 遍历 /proc 找残留 worker
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["pkill", "-f", "vllm.v1.worker"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            print("  已清理残留 vLLM worker 进程", file=sys.stderr)
+    except Exception:
+        pass
+
+
+atexit.register(_kill_vllm_workers)
+
 
 # ======================== 默认值 ========================
 
@@ -105,6 +135,8 @@ def run_profiling(
     os.environ.setdefault("HCCL_OP_EXPANSION_MODE", "AIV")
     # 开启融合 MoE 算子 (npu_grouped_matmul_swiglu_quant), 确保 profiling 采集的是生产路径
     os.environ.setdefault("VLLM_ASCEND_ENABLE_GROUPED_MATMUL_SWIGLU_QUANT", "1")
+    # 避免端口冲突 (默认 8000 可能被占用)
+    os.environ.setdefault("VLLM_PORT", "8200")
 
     # 延迟 import: 确保环境变量已生效
     from vllm import LLM, SamplingParams
@@ -146,7 +178,11 @@ def run_profiling(
 
     print("加载模型中...", file=sys.stderr)
     t0 = time.time()
-    llm = LLM(**llm_kwargs)
+    try:
+        llm = LLM(**llm_kwargs)
+    except Exception as e:
+        print(f"模型加载失败: {e}", file=sys.stderr)
+        sys.exit(1)
     print(f"模型加载完成 ({time.time() - t0:.1f}s)\n", file=sys.stderr)
 
     # ---- Warmup ----
@@ -155,10 +191,14 @@ def run_profiling(
     warmup_params = SamplingParams(max_tokens=max_tokens, temperature=0)
 
     print(f"Warmup ({warmup_steps} 步)...", file=sys.stderr)
-    for i in range(warmup_steps):
-        llm.generate(warmup_prompts, warmup_params)
-        print(f"  step {i + 1}/{warmup_steps} 完成", file=sys.stderr)
-    print("Warmup 完成.\n", file=sys.stderr)
+    try:
+        for i in range(warmup_steps):
+            llm.generate(warmup_prompts, warmup_params)
+            print(f"  step {i + 1}/{warmup_steps} 完成", file=sys.stderr)
+        print("Warmup 完成.\n", file=sys.stderr)
+    except Exception as e:
+        print(f"Warmup 失败: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # ---- Profile ----
     # start_profile 由 vllm core.py 内部触发, stop_profile 在 generate 完成后外部调用
@@ -168,8 +208,12 @@ def run_profiling(
     print(f"开始 profiling: {batch_size} prompts × {max_tokens} tokens ...",
           file=sys.stderr)
 
-    outputs = llm.generate(profile_prompts, profile_params)
-    llm.stop_profile()
+    try:
+        outputs = llm.generate(profile_prompts, profile_params)
+        llm.stop_profile()
+    except Exception as e:
+        print(f"Profiling 失败: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"\nProfiling 完成!", file=sys.stderr)
     print(f"  采集 {len(outputs)} 个请求", file=sys.stderr)
