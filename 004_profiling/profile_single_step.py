@@ -3,18 +3,17 @@
 单步 Profiling: 精确采集少量 decode step 的算子级 trace.
 
 流程:
-  1. 设置 VLLM_TORCH_PROFILER_DIR 环境变量 (必须在 import vllm 之前)
+  1. 设置环境变量 (VLLM_TORCH_PROFILER_DIR 等, 必须在 import vllm 之前)
   2. LLM() 加载模型, worker 中初始化 torch_npu.profiler
   3. generate() warmup 若干步 (graph capture + JIT, 不采集)
-  4. start_profile() → generate(max_tokens=N) → stop_profile()
+  4. generate(max_tokens=N) → vllm core.py 内部触发 profiling
   5. trace 自动保存到 output_dir
 
 用法:
     python3 profile_single_step.py --model-key qwen3-30b-a3b --quant bf16
     python3 profile_single_step.py --model-key qwen3-30b-a3b --quant w8a8
-    python3 profile_single_step.py --model /path/to/model --quant bf16 \\
-        --batch-size 64 --warmup-steps 5 --tp 4
-    python3 profile_single_step.py --model-key qwen3-30b-a3b --quant bf16 --enforce-eager
+    python3 profile_single_step.py --model /path/to/model --quant bf16 \
+        --batch-size 4 --warmup-steps 5 --tp 4
 """
 
 import argparse
@@ -89,21 +88,23 @@ def run_profiling(
     enforce_eager: bool = False,
 ):
     """
-    加载模型, warmup, 精确采集指定 step 数的 profiling trace.
+    加载模型, warmup, 采集 profiling trace.
 
     流程:
-      1. 设 VLLM_TORCH_PROFILER_DIR (worker 初始化时读取)
+      1. 设置环境变量 (worker 初始化时读取)
       2. LLM() 加载模型 → worker._init_profiler() 创建 torch_npu.profiler
       3. warmup: generate() 若干步, 触发 ACLGraph capture + JIT
-      4. start_profile() → profiler.start() (开始采集)
-      5. generate(max_tokens) → 触发 1+ execute_model()
-      6. stop_profile() → profiler.stop() (保存 trace)
+      4. generate(max_tokens) → vllm core.py 内部触发 start_profile/stop_profile
 
     max_tokens=2 时: 1 次 prefill (input→token1) + 1 次 decode (token1→token2)
     """
-    # 必须在 import vllm 之前设置, worker 初始化时检查此变量
+    # ---- 环境变量 (必须在 import vllm 之前设置) ----
     os.environ["VLLM_TORCH_PROFILER_DIR"] = output_dir
     os.environ.setdefault("VLLM_USE_V1", "1")
+    os.environ.setdefault("TASK_QUEUE_ENABLE", "1")
+    os.environ.setdefault("HCCL_OP_EXPANSION_MODE", "AIV")
+    # 开启融合 MoE 算子 (npu_grouped_matmul_swiglu_quant), 确保 profiling 采集的是生产路径
+    os.environ.setdefault("VLLM_ASCEND_ENABLE_GROUPED_MATMUL_SWIGLU_QUANT", "1")
 
     # 延迟 import: 确保环境变量已生效
     from vllm import LLM, SamplingParams
@@ -131,7 +132,13 @@ def run_profiling(
         dtype="bfloat16",
         trust_remote_code=True,
         enforce_eager=enforce_eager,
-        # NZ 格式: Ascend 生产环境标配, 让 npu_grouped_matmul 等走 FRACTAL_NZ 路径
+        # FULL_DECODE_ONLY: decode 阶段做 full graph, prefill 不做图
+        # cudagraph_capture_sizes 与 batch_size 对齐
+        compilation_config={
+            "cudagraph_mode": "FULL_DECODE_ONLY",
+            "cudagraph_capture_sizes": [batch_size],
+        },
+        # NZ 格式: Ascend 生产环境标配
         additional_config={"enable_weight_nz_layout": True},
     )
     if quant not in ("bf16", "bfloat16"):
@@ -144,7 +151,6 @@ def run_profiling(
 
     # ---- Warmup ----
     # warmup 触发 ACLGraph capture + JIT 编译, 确保后续采集的是稳态算子.
-    # warmup 期间不开启 profiler, 不产生 trace 数据.
     warmup_prompts = ["hello"] * batch_size
     warmup_params = SamplingParams(max_tokens=max_tokens, temperature=0)
 
@@ -155,16 +161,13 @@ def run_profiling(
     print("Warmup 完成.\n", file=sys.stderr)
 
     # ---- Profile ----
-    # start_profile() → worker.profiler.start() → torch_npu.profiler 开始采集
-    # generate() 触发 execute_model(), profiler 记录所有 NPU kernel
-    # stop_profile() → worker.profiler.stop() → on_trace_ready 保存 trace
+    # start_profile 由 vllm core.py 内部触发, stop_profile 在 generate 完成后外部调用
     profile_prompts = ["hello"] * batch_size
     profile_params = SamplingParams(max_tokens=max_tokens, temperature=0)
 
     print(f"开始 profiling: {batch_size} prompts × {max_tokens} tokens ...",
           file=sys.stderr)
 
-    llm.start_profile()
     outputs = llm.generate(profile_prompts, profile_params)
     llm.stop_profile()
 
