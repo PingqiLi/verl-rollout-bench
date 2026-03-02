@@ -30,14 +30,6 @@ import signal
 
 def _kill_vllm_workers():
     """杀死残留的 vLLM worker 子进程 (TP worker, EngineCore 等)."""
-    import signal as _sig
-    pid = os.getpid()
-    try:
-        # 杀死当前进程组的所有子进程
-        os.killpg(os.getpgid(pid), _sig.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        pass
-    # 备用: 遍历 /proc 找残留 worker
     try:
         import subprocess as _sp
         result = _sp.run(
