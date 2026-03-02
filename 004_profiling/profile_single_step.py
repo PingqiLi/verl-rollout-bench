@@ -52,6 +52,8 @@ def _kill_vllm_workers():
 
 atexit.register(_kill_vllm_workers)
 
+# 启动前先清理上次可能的残留进程
+_kill_vllm_workers()
 
 # ======================== 默认值 ========================
 
@@ -135,8 +137,9 @@ def run_profiling(
     os.environ.setdefault("HCCL_OP_EXPANSION_MODE", "AIV")
     # 开启融合 MoE 算子 (npu_grouped_matmul_swiglu_quant), 确保 profiling 采集的是生产路径
     os.environ.setdefault("VLLM_ASCEND_ENABLE_GROUPED_MATMUL_SWIGLU_QUANT", "1")
-    # 避免端口冲突 (默认 8000 可能被占用)
+    # 避免端口冲突: VLLM_PORT (API) + HCCL_IF_BASE_PORT (HCCL 通信)
     os.environ.setdefault("VLLM_PORT", "8200")
+    os.environ.setdefault("HCCL_IF_BASE_PORT", "29800")
 
     # 延迟 import: 确保环境变量已生效
     from vllm import LLM, SamplingParams
