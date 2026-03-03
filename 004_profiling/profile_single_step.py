@@ -49,7 +49,7 @@ _kill_vllm_workers()
 
 # ======================== 默认值 ========================
 
-DEFAULT_BATCH_SIZE = 32
+DEFAULT_BATCH_SIZE = 4
 DEFAULT_MAX_TOKENS = 10      # 1 prefill + 9 decode steps, decode 占比 ~90%
 DEFAULT_WARMUP_STEPS = 3     # graph capture + JIT 需要 2-3 步
 DEFAULT_MAX_MODEL_LEN = 32   # 需容纳 input + max_tokens

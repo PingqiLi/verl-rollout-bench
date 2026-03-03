@@ -42,7 +42,7 @@ MODEL_KEY="qwen3-30b-a3b"
 QUANTS=("bf16" "w8a8")
 
 # 单步 profiling 参数
-BATCH_SIZE=32           # 同时推理的 prompt 数 (模拟 decode batch)
+BATCH_SIZE=4            # 同时推理的 prompt 数
 MAX_TOKENS=10           # 每 prompt 生成 token 数 (1 prefill + 9 decode, decode 占 ~90%)
 WARMUP_STEPS=3          # warmup 步数 (graph capture + JIT)
 
