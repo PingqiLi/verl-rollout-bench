@@ -50,9 +50,9 @@ _kill_vllm_workers()
 # ======================== 默认值 ========================
 
 DEFAULT_BATCH_SIZE = 32
-DEFAULT_MAX_TOKENS = 2       # 1 prefill + 1 decode step
+DEFAULT_MAX_TOKENS = 10      # 1 prefill + 9 decode steps, decode 占比 ~90%
 DEFAULT_WARMUP_STEPS = 3     # graph capture + JIT 需要 2-3 步
-DEFAULT_MAX_MODEL_LEN = 16   # 仅需容纳 input + max_tokens
+DEFAULT_MAX_MODEL_LEN = 32   # 需容纳 input + max_tokens
 DEFAULT_TP = 4
 DEFAULT_GPU_MEM_UTIL = 0.8
 
@@ -115,12 +115,12 @@ def run_profiling(
     加载模型, warmup, 采集 profiling trace.
 
     流程:
-      1. 设置环境变量 (worker 初始化时读取)
-      2. LLM() 加载模型 → worker._init_profiler() 创建 torch_npu.profiler
-      3. warmup: generate() 若干步, 触发 ACLGraph capture + JIT
-      4. generate(max_tokens) → vllm core.py 内部触发 start_profile/stop_profile
+      1. 设置环境变量 (VLLM_TORCH_PROFILER_DIR, worker 初始化时创建 profiler)
+      2. LLM() 加载模型 (profiler 已创建但未启动)
+      3. warmup: generate() 若干步, 触发 ACLGraph capture + JIT (不采集)
+      4. start_profile() → generate(max_tokens) → stop_profile() 仅采集推理
 
-    max_tokens=2 时: 1 次 prefill (input→token1) + 1 次 decode (token1→token2)
+    max_tokens=10 时: 1 次 prefill + 9 次 decode, decode 占比 ~90%
     """
     # ---- 环境变量 (必须在 import vllm 之前设置) ----
     os.environ["VLLM_TORCH_PROFILER_DIR"] = output_dir
@@ -181,7 +181,6 @@ def run_profiling(
     print(f"模型加载完成 ({time.time() - t0:.1f}s)\n", file=sys.stderr)
 
     # ---- Warmup ----
-    # warmup 触发 ACLGraph capture + JIT 编译, 确保后续采集的是稳态算子.
     warmup_prompts = ["hello"] * batch_size
     warmup_params = SamplingParams(max_tokens=max_tokens, temperature=0)
 
@@ -195,8 +194,9 @@ def run_profiling(
         print(f"Warmup 失败: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # ---- Profile ----
-    # start_profile 由 vllm core.py 内部触发, stop_profile 在 generate 完成后外部调用
+    # ---- Profile (仅采集推理) ----
+    # 只在目标 generate() 前后开关 profiler, 确保 trace 只含推理算子.
+    # max_tokens=10 → 1 prefill + 9 decode steps, decode 占主导.
     profile_prompts = ["hello"] * batch_size
     profile_params = SamplingParams(max_tokens=max_tokens, temperature=0)
 
@@ -204,6 +204,7 @@ def run_profiling(
           file=sys.stderr)
 
     try:
+        llm.start_profile()
         outputs = llm.generate(profile_prompts, profile_params)
         llm.stop_profile()
     except Exception as e:

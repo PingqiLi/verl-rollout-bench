@@ -43,7 +43,7 @@ QUANTS=("bf16" "w8a8")
 
 # 单步 profiling 参数
 BATCH_SIZE=32           # 同时推理的 prompt 数 (模拟 decode batch)
-MAX_TOKENS=2            # 每 prompt 生成 token 数 (2 = 1 prefill + 1 decode)
+MAX_TOKENS=10           # 每 prompt 生成 token 数 (1 prefill + 9 decode, decode 占 ~90%)
 WARMUP_STEPS=3          # warmup 步数 (graph capture + JIT)
 
 ENFORCE_EAGER=false
@@ -55,12 +55,12 @@ show_help() {
     cat <<EOF
 用法: bash profile_offline.sh [选项]
 
-单步 Profiling: 精确采集 1 decode step 的算子级 trace (BF16 vs W8A8D)
+单步 Profiling: 精确采集 decode step 的算子级 trace (BF16 vs W8A8D)
 
 选项:
   --quants "Q1 Q2"      精度列表 (默认: "bf16 w8a8")
   --batch-size N         batch 大小 (默认: ${BATCH_SIZE})
-  --max-tokens N         生成 token 数, 2=1 prefill+1 decode (默认: ${MAX_TOKENS})
+  --max-tokens N         生成 token 数, 10=1 prefill+9 decode (默认: ${MAX_TOKENS})
   --warmup-steps N       warmup 步数 (默认: ${WARMUP_STEPS})
   --eager                强制 eager 模式 (禁用 ACLGraph)
   --gpu-mem-util F       覆盖 GPU 显存比例

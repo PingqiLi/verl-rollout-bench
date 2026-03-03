@@ -3,7 +3,7 @@
 ## Project Overview
 
 Benchmarking toolkit for comparing BF16 / W8A16 / W8A8 quantization on vLLM inference throughput,
-targeting verl RL GRPO rollout scenarios on Ascend NPU. Organized as 4 experiments in separate directories,
+targeting verl RL GRPO rollout scenarios on Ascend NPU. Four experiments in separate directories,
 sharing a YAML config at the root.
 
 ## File Map
@@ -11,21 +11,19 @@ sharing a YAML config at the root.
 ```
 config.yaml                          # Model definitions, global params (shared by all experiments)
 config_parser.py                     # YAML config parser, called by shell scripts (CLI tool)
-001_multi_model_quant/               # Experiment 001: multi-model × multi-quant throughput comparison
-  run_vllm_benchmark.sh              #   Main orchestrator: experiment matrix, server lifecycle, profiling
-  summarize_benchmark.py             #   Result analysis: JSON → comparison tables (txt/csv/markdown)
-  result.txt                         #   Sample benchmark results
-  rollout_bench_tables.tex           #   LaTeX output table
-002_decode_sweep/                    # Experiment 002: simulated GRPO rollout (mixed output_len)
+001_multi_model_quant/               # Multi-model × multi-quant throughput comparison
+  run_vllm_benchmark.sh              #   Main orchestrator: experiment matrix, server lifecycle
+  summarize_benchmark.py             #   Result analysis: JSON → comparison tables (txt/csv/md)
+002_decode_sweep/                    # Simulated GRPO rollout (mixed output_len)
   rollout_bench.py                   #   Core benchmark: vLLM LLM.generate() with per-request SamplingParams
   run_rollout_bench.sh               #   Shell orchestrator: BF16 vs W8A8D, NPU parallel, cleanup
   analyze_rollout.py                 #   Result comparison: throughput, speedup
-003_operator_bench/                  # Experiment 003: single-operator benchmark (GEMM shapes)
+003_operator_bench/                  # Single-operator benchmark (GEMM shapes)
   shapes.py                          #   Model GEMM shape definitions (30B-A3B, 718B)
   bench_ops.py                       #   BF16 vs W8A8D operator benchmark
   analyze.py                         #   Results analysis with validation
-  run_operator_bench.sh               #   One-click: full benchmark + M-sweep + analysis
-004_profiling/                       # Experiment 004: operator-level profiling
+  run_operator_bench.sh              #   One-click: full benchmark + M-sweep + analysis
+004_profiling/                       # Operator-level profiling
   profile_offline.sh                 #   torch_npu profiler + vllm bench throughput
   profile_online.sh                  #   msserviceprofiler + vllm serve
   analyze_profile.py                 #   Parse traces, compare BF16 vs W8A8D operator timing
@@ -33,19 +31,21 @@ config_parser.py                     # YAML config parser, called by shell scrip
 
 ## Build / Run / Test Commands
 
-There is no formal build system, package manager, or test suite.
+No formal build system, package manager, or test suite.
 
 ### Dependencies
 
-- Python 3.10+ with `pyyaml` (`import yaml`)
-- vLLM (with Ascend NPU support) — for actual benchmarking
-- Standard library: `argparse`, `json`, `math`, `os`, `sys`, `re`, `pathlib`, `collections`
+- Python 3.10+ with `pyyaml`, `numpy`
+- vLLM (with Ascend NPU support) — for benchmarking
+- `torch`, `torch_npu` — for experiment 003 (operator benchmark)
+- Standard library: `argparse`, `json`, `math`, `os`, `sys`, `re`, `pathlib`, `collections`, `gzip`
 
 ### Running
 
 ```bash
-# Full benchmark (requires Ascend NPU + models)
 export MODEL_BASE="/path/to/models"
+
+# Full benchmark (requires Ascend NPU + models)
 bash 001_multi_model_quant/run_vllm_benchmark.sh
 
 # Diagnostic mode (quick validation)
@@ -53,20 +53,9 @@ bash 001_multi_model_quant/run_vllm_benchmark.sh --diagnostic
 
 # Subset of experiments
 bash 001_multi_model_quant/run_vllm_benchmark.sh --models qwen3-1.7b --quants bf16,w8a16
-
-# Offline mode (default, recommended for throughput comparison)
-bash 001_multi_model_quant/run_vllm_benchmark.sh --offline
-
-# Online mode (latency metrics)
-bash 001_multi_model_quant/run_vllm_benchmark.sh --online
-
-### Summarize results independently
-
-```bash
-python3 001_multi_model_quant/summarize_benchmark.py outputs/<timestamp>/results --markdown
 ```
 
-### Config parser CLI (used by shell script, can also run standalone)
+### Config parser CLI
 
 ```bash
 python3 config_parser.py config.yaml list-models
@@ -78,12 +67,10 @@ python3 config_parser.py config.yaml export-globals
 
 ### Linting (no configured linter)
 
-No flake8, ruff, mypy, or pre-commit configured. If adding linting, respect current style:
-
 ```bash
 # Suggested (not enforced):
 ruff check --line-length 100
-mypy --ignore-missing-imports config_parser.py summarize_benchmark.py
+mypy --ignore-missing-imports config_parser.py
 ```
 
 ### Tests
@@ -91,95 +78,64 @@ mypy --ignore-missing-imports config_parser.py summarize_benchmark.py
 No test suite exists. When adding tests, use `pytest`:
 
 ```bash
-pytest tests/ -v              # Run all
-pytest tests/test_foo.py -v   # Single file
-pytest tests/test_foo.py::test_bar -v  # Single test
+pytest tests/ -v
+pytest tests/test_foo.py -v
+pytest tests/test_foo.py::test_bar -v
 ```
 
 ## Code Style Guidelines
 
 ### Language
 
-- **Comments and docstrings**: Chinese (中文). This is intentional and consistent across the project.
+- **Comments and docstrings**: Chinese (中文). Intentional and consistent.
 - **Variable/function names**: English, snake_case.
-- **Commit messages**: English. Short imperative style: `Fix: description` or `Add: description`.
-- **README**: Chinese.
+- **Commit messages**: English. `Fix:`, `Add:`, or descriptive imperative phrase. No conventional commits.
+- **README files**: Chinese.
 
 ### Python Style
 
 - **Shebang**: `#!/usr/bin/env python3` on all scripts.
 - **Module docstring**: Chinese, describes purpose + usage examples.
-- **Imports**: stdlib first, then third-party (`yaml`). No blank line between stdlib groups.
-  ```python
-  import argparse
-  import json
-  import os
-  import sys
-  from collections import OrderedDict
-  from pathlib import Path
-  ```
-- **Type hints**: Used for function signatures. Use `tuple[X | None, Y | None]` style (Python 3.10+),
-  not `Optional[X]` or `Tuple`.
-  ```python
-  def _infer_output_tput(d: dict, *, default_input_len: int) -> tuple[float | None, str | None]:
-  ```
+- **Imports**: stdlib first, blank line, then third-party (`yaml`, `numpy`, `torch`).
+  Side-effect imports use `# noqa: F401` (e.g., `import torch_npu  # noqa: F401`).
+- **Type hints**: Python 3.10+ syntax: `tuple[X | None, Y]`, `list[int]`, `dict[str, dict]`.
+  Never `Optional[X]` or `Tuple`.
 - **String formatting**: f-strings exclusively. No `.format()` or `%`.
 - **Naming**: snake_case for functions/variables. UPPER_CASE for module-level constants.
-  ```python
-  METRICS = [...]
-  SPEEDUP_METRICS = [...]
-  def normalize_result(data: dict, *, default_input_len: int) -> dict:
-  ```
-- **Keyword-only args**: Use `*` separator for clarity in functions with multiple params.
-- **Error output**: `print(..., file=sys.stderr)` for errors, then `sys.exit(1)`.
-- **No classes**: Scripts use module-level functions + `main()` pattern. Keep it simple.
-- **Line length**: ~100 chars (not strict, no formatter configured).
+- **Keyword-only args**: Use `*` separator for clarity.
+- **Error output**: `print(..., file=sys.stderr)` for errors, then `sys.exit(1)`. No exceptions for CLI.
+- **No classes**: Module-level functions + `main()` pattern.
+- **Line length**: ~100 chars (not strict).
 - **Trailing commas**: Used in multi-line lists/dicts.
-- **Docstrings**: Short Chinese one-liners for simple functions. Multi-line for complex ones.
+- **Docstrings**: Short Chinese one-liners for simple functions.
+- **JSON output**: `json.dump(..., indent=2, ensure_ascii=False)`.
+- **Timing**: `time.perf_counter()` for benchmarks, never `time.time()`.
+- **CLI pattern**: `argparse` with `add_mutually_exclusive_group` for mode selection.
+  All analysis scripts support `--markdown` flag for Markdown output.
+- **Path handling**: Mix of `pathlib.Path` and `os.path`. New code should prefer `pathlib`.
 
 ### Bash Style
 
-- **Header**: `set -euo pipefail` — strict error handling.
-- **Functions**: snake_case. Documented with inline comments (Chinese).
-- **Variables**: UPPER_CASE for globals/config, lower_case for locals.
-  ```bash
-  RESULT_DIR="${RUN_DIR}/results"   # Global
-  local model_key="$1"              # Local
-  ```
-- **Quoting**: Always double-quote variable expansions: `"${VAR}"`.
-- **Logging**: Color-coded functions: `log_info`, `log_ok`, `log_warn`, `log_error`, `log_step`.
-- **Process management**: `kill_process_tree()` for recursive cleanup. Trap EXIT for cleanup.
+- **Header**: `set -euo pipefail`.
+- **Functions**: snake_case. Inline comments in Chinese.
+- **Variables**: UPPER_CASE for globals, `local` + lower_case for locals.
+- **Quoting**: Always `"${VAR}"`.
+- **Logging**: Color-coded: `log_info`, `log_ok`, `log_warn`, `log_error`, `log_step`.
+- **Process management**: `kill_process_tree()` for recursive cleanup. Trap EXIT.
 - **Config access**: Through `cfg()` wrapper calling `config_parser.py`.
-- **Command building**: String concatenation with `+=` for complex commands, then `eval`.
+- **Command building**: String concatenation with `+=`, then `eval`.
 
 ### YAML Config (config.yaml)
 
-- **Structure**: `global:` (shared params) + `models:` (per-model config).
-- **Model block fields**: `display`, `tp`, `gpu_mem_util`, `paths` (keyed by quant).
-- **Variable expansion**: `${MODEL_BASE}` in paths, expanded at runtime.
-- **Adding a model**: Add a new block under `models:` with display/tp/gpu_mem_util/paths.
-  Missing quant paths = that combination is automatically skipped.
+- `global:` (shared params) + `models:` (per-model config).
+- Model fields: `display`, `tp`, `gpu_mem_util`, `paths` (keyed by quant).
+- `${MODEL_BASE}` in paths, expanded at runtime.
+- Adding a model: new block under `models:`. Missing quant paths auto-skipped.
 
 ### Error Handling
 
-- **Python**: `sys.exit(1)` with Chinese error message to stderr. No exceptions for CLI errors.
-  ```python
-  print(f"未知模型: {model_key}", file=sys.stderr)
-  sys.exit(1)
-  ```
-- **Bash**: `return 1` from functions, checked by callers. Failed experiments logged but don't abort
-  the full run (graceful degradation).
-
-### Git Conventions
-
-- **Commit prefix**: `Fix:`, `Add:`, or descriptive imperative phrase.
-- **Examples from history**:
-  ```
-  Fix: NO_PROFILE unbound variable (missing initialization)
-  YAML config + simplified output structure
-  Default: offline mode, no profiling (matches verl behavior)
-  ```
-- **No conventional commits** (no `feat:`, `chore:` etc.).
+- **Python**: `print(f"错误信息", file=sys.stderr)` then `sys.exit(1)`.
+- **Bash**: `return 1` from functions. Failed experiments logged but don't abort the full run.
 
 ## Architecture Notes
 
@@ -195,16 +151,15 @@ config.yaml → config_parser.py → run_vllm_benchmark.sh → vLLM CLI
 
 ### Key Design Decisions
 
-1. **Offline mode preferred**: `LLM.generate()` directly, not HTTP. Supports `n=8` multi-sampling
-   to simulate verl rollout's actual workload.
+1. **Offline mode preferred**: `LLM.generate()` directly, not HTTP. `n=8` multi-sampling
+   simulates verl rollout's actual workload.
 2. **Per-model gpu_memory_utilization**: Simulates verl's shared GPU memory (actor + rollout).
-   Override with `--gpu-mem-util 0.9` for peak performance testing.
-3. **Config-driven**: All model/experiment parameters in `config.yaml`. Shell script is generic.
+3. **Config-driven**: All model/experiment parameters in `config.yaml`. Shell scripts are generic.
 4. **Process tree cleanup**: vLLM spawns worker subprocesses. `kill_process_tree()` ensures full
    cleanup between experiments to prevent GPU memory leaks.
 
 ### Adding New Experiments
 
 1. Add model entry in `config.yaml` under `models:`.
-2. No code changes needed — the shell script auto-discovers models from YAML.
+2. No code changes needed — shell scripts auto-discover models from YAML.
 3. Missing quant paths are auto-skipped (no error).
