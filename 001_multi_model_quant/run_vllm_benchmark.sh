@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_YAML="${CONFIG_YAML:-${SCRIPT_DIR}/../config.yaml}"
 
 # 从 config.yaml 加载全局默认值 (环境变量可覆盖)
-eval "$(python3 \"${SCRIPT_DIR}/../config_parser.py\" \"${CONFIG_YAML}\" export-globals)"
+eval "$(python3 "${SCRIPT_DIR}/../config_parser.py" "${CONFIG_YAML}" export-globals)"
 
 # 环境变量覆盖 YAML 默认值
 MODEL_BASE="${MODEL_BASE:-/data/l50044498/models}"

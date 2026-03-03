@@ -256,7 +256,7 @@ def run_shape(shape: dict, warmup: int, repeats: int) -> dict:
     is_moe = "expert" in name
 
     if is_moe:
-        num_experts = shape.get("count_per_layer", 8)
+        num_experts = shape.get("num_experts", shape.get("count_per_layer", 8))
         bf16_ms = bench_grouped_matmul_bf16(
             M, K, N, num_experts=num_experts,
             warmup=warmup, repeats=repeats)
@@ -369,6 +369,8 @@ def predict_model_speedup(results: list[dict]) -> dict:
     根据单算子结果预测整模型 decode 阶段 speedup
 
     加权方式: 每个算子的权重 = count_per_layer × num_layers × bf16_ms
+    注意: MoE expert 的 benchmark 已包含所有活跃 expert (num_experts),
+    count_per_layer=1 表示每层一次 grouped dispatch, 避免 double count.
     """
     total_bf16 = 0.0
     total_w8a8d = 0.0

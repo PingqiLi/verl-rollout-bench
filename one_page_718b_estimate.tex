@@ -1,0 +1,88 @@
+\documentclass[12pt,a4paper]{ctexart}
+\usepackage[margin=2cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{tikz}
+\pagestyle{empty}
+
+\definecolor{resultbg}{RGB}{232,245,233}
+\definecolor{resultframe}{RGB}{76,175,80}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries Pangu-718B MoE：W8A8D Decode 加速比估计}
+\end{center}
+
+\vspace{0.8em}
+
+\noindent
+\tikz[baseline=(X.base)]{
+  \node[fill=resultbg, draw=resultframe, thick, rounded corners=4pt,
+        inner xsep=10pt, inner ysep=8pt, text width=\dimexpr\textwidth-24pt\relax] (X) {
+    \textbf{结论：}Pangu-718B decode W8A8D 端到端加速比 $\mathbf{>1.14\times}$（+14\%+）
+  };
+}
+
+\vspace{1.2em}
+
+%% ===== 1. 公式与原理 =====
+\noindent\textbf{公式}\quad
+Decode 每步耗时 = GEMM（矩阵乘）+ 非 GEMM（attention score、通信、激活等）。
+W8A8D 仅加速 GEMM 部分，非 GEMM 耗时不变（$S_{gemm}$ 已含 dynamic quant 开销），用 Amdahl's Law 估算：
+
+\vspace{0.3em}
+\[
+\boxed{\;S_{e2e}=\frac{1}{\dfrac{f}{S_{gemm}}+(1-f)}\;}
+\qquad
+\begin{aligned}
+f &= \text{GEMM 耗时占 decode 总耗时的比例}\\
+S_{gemm} &= \text{W8A8D 对 GEMM 的加速比}
+\end{aligned}
+\]
+
+\vspace{0.8em}
+
+%% ===== 2. f 的来源 =====
+\noindent\textbf{$\bm{f}$ 的测量}\quad
+对同架构模型 Qwen3-30B-A3B BF16 decode profiling（Ascend 910B），
+GEMM 算子（仅量化部分，不含 attention score）耗时占比：
+
+\vspace{0.3em}
+\centerline{$f = 42{,}954 \;/\; 93{,}022 = \mathbf{0.462}$}
+
+\vspace{0.8em}
+
+%% ===== 3. S_gemm 的来源 =====
+\noindent\textbf{$\bm{S_{gemm}}$ 的测量}\quad
+按 718B 实际 GEMM shape 做单算子 benchmark（BF16 vs W8A8D，Ascend 910B），
+按各类别 BF16 耗时加权：
+
+\vspace{0.3em}
+\begin{center}
+\begin{tabular}{lrc}
+\toprule
+类别 & GEMM 占比 & Speedup \\
+\midrule
+Attention (MLA) & 46\% & $1.45\times$ \\
+MoE Expert & 39\% & $1.34\times$ \\
+Shared Expert & 10\% & $0.96\times$ \\
+Dense FFN & 5\% & $1.59\times$ \\
+\midrule
+\textbf{加权 $S_{gemm}$} & 100\% & $\mathbf{1.347\times}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{0.8em}
+
+%% ===== 结果 =====
+\noindent\textbf{结果}\quad
+代入 $f\!=\!0.462$，$S_{gemm}\!=\!1.347$，得 $S_{e2e} = \mathbf{1.14\times}$（保守下界）。
+
+\vspace{0.3em}
+{\small 718B 单层 GEMM shape 更大（$K\!\times\!N$ 增 10 倍），$f_{718B} > 0.462$，实际加速比高于 $1.14\times$。}
+
+\end{document}

@@ -83,7 +83,8 @@ def get_moe_shapes(model_name: str, decode_batch: int) -> list[dict]:
             "M": B_e,
             "K": H,
             "N": I * 2,     # gate + up 融合
-            "count_per_layer": top_k,  # 每个 token 激活 top_k 个 expert
+            "num_experts": top_k,      # benchmark 分组数（活跃 expert 数）
+            "count_per_layer": 1,      # 每层一次 grouped dispatch
             "num_layers": num_moe_layers,
         },
         {
@@ -91,7 +92,8 @@ def get_moe_shapes(model_name: str, decode_batch: int) -> list[dict]:
             "M": B_e,
             "K": I,
             "N": H,
-            "count_per_layer": top_k,
+            "num_experts": top_k,
+            "count_per_layer": 1,
             "num_layers": num_moe_layers,
         },
     ]
@@ -104,6 +106,7 @@ def get_moe_shapes(model_name: str, decode_batch: int) -> list[dict]:
                 "M": decode_batch,
                 "K": H,
                 "N": I * 2,
+                "num_experts": cfg["n_shared_experts"],
                 "count_per_layer": 1,
                 "num_layers": num_moe_layers,
             },
@@ -112,6 +115,7 @@ def get_moe_shapes(model_name: str, decode_batch: int) -> list[dict]:
                 "M": decode_batch,
                 "K": I,
                 "N": H,
+                "num_experts": cfg["n_shared_experts"],
                 "count_per_layer": 1,
                 "num_layers": num_moe_layers,
             },
