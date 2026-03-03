@@ -51,6 +51,10 @@ SERVER_WAIT_TIMEOUT=600
 DIAGNOSTIC_MODE=false
 NO_PROFILE=false
 
+# 重复次数
+REPEATS=1
+CURRENT_RUN=""
+
 # CLI 覆盖变量
 USER_MODELS=""
 USER_QUANTS=""
@@ -73,6 +77,7 @@ print_usage() {
     echo "  --output-len N        输出生成长度 (默认: ${OUTPUT_LEN})"
     echo "  --num-prompts N       请求数量 (默认: ${NUM_PROMPTS})"
     echo "  -n N                  每个 prompt 生成 N 个采样 (默认: ${NUM_SAMPLES_PER_PROMPT}, 仅 offline)"
+    echo "  --repeats N           每组实验重复次数 (默认: 1)"
     echo "  --gpu-mem-util F      GPU 显存占用比例 (默认: per-model, 设置后覆盖所有模型)"
     echo "  --max-concurrency N   最大并发数 (默认: ${MAX_CONCURRENCY}, 仅 online)"
     echo "  --port PORT           服务端口 (默认: ${SERVER_PORT}, 仅 online)"
@@ -123,6 +128,9 @@ while [[ $# -gt 0 ]]; do
             shift 2 ;;
         --port)
             SERVER_PORT="$2"
+            shift 2 ;;
+        --repeats)
+            REPEATS="$2"
             shift 2 ;;
         --model-base)
             MODEL_BASE="$2"
@@ -231,7 +239,11 @@ get_profile_dir() {
 get_result_file() {
     local model_key="$1"
     local quant="$2"
-    echo "${RESULT_DIR}/${model_key}_${quant}.json"
+    local suffix=""
+    if [[ -n "${CURRENT_RUN}" ]]; then
+        suffix="_run${CURRENT_RUN}"
+    fi
+    echo "${RESULT_DIR}/${model_key}_${quant}${suffix}.json"
 }
 
 # 获取实验的 server 日志文件路径
@@ -245,7 +257,11 @@ get_server_log() {
 get_bench_log() {
     local model_key="$1"
     local quant="$2"
-    echo "${LOG_DIR}/bench_${model_key}_${quant}.log"
+    local suffix=""
+    if [[ -n "${CURRENT_RUN}" ]]; then
+        suffix="_run${CURRENT_RUN}"
+    fi
+    echo "${LOG_DIR}/bench_${model_key}_${quant}${suffix}.log"
 }
 
 # 杀掉某个进程及其所有子进程 (递归)
@@ -848,7 +864,9 @@ run_full_benchmark() {
     local valid_experiments
     valid_experiments=$(get_valid_experiments "${models[@]}")
     local total_experiments
-    total_experiments=$(echo "$valid_experiments" | wc -l | tr -d ' ')
+    local valid_count
+    valid_count=$(echo "$valid_experiments" | wc -l | tr -d ' ')
+    total_experiments=$(( valid_count * REPEATS ))
 
     # 列出跳过的组合
     local skipped_experiments=()
@@ -868,7 +886,7 @@ run_full_benchmark() {
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
     echo "  Benchmark 模式: ${BENCH_MODE}"
-    echo "  有效实验: ${total_experiments} 组"
+    echo "  有效实验: ${total_experiments} 组 (${valid_count} 组合 × ${REPEATS} 轮)"
     echo "  模型: ${models[*]}"
     echo "  量化: ${quants[*]}"
     if [[ ${#skipped_experiments[@]} -gt 0 ]]; then
@@ -894,33 +912,47 @@ run_full_benchmark() {
     local skip_count=0
     local failed_experiments=()
 
-    for model_key in "${models[@]}"; do
-        for quant in "${quants[@]}"; do
-            # 跳过未配置的组合
-            if should_skip_experiment "$model_key" "$quant"; then
-                local skip_display
-                skip_display=$(get_model_field "$model_key" "display")
-                log_warn "跳过: ${skip_display} / ${quant^^} (未配置该量化精度的模型路径)"
-                skip_count=$((skip_count + 1))
-                continue
-            fi
-
-            exp_index=$((exp_index + 1))
-            local display_name
-            display_name=$(get_model_field "$model_key" "display")
-
+    for repeat in $(seq 1 "$REPEATS"); do
+        if [[ "$REPEATS" -gt 1 ]]; then
+            CURRENT_RUN="$repeat"
             echo ""
-            log_info "========== 实验 ${exp_index}/${total_experiments}: ${display_name} / ${quant^^} =========="
+            log_info "==================== 第 ${repeat}/${REPEATS} 轮 ===================="
+        fi
 
-            if run_single_experiment "$model_key" "$quant" "$NUM_PROMPTS"; then
-                success_count=$((success_count + 1))
-            else
-                fail_count=$((fail_count + 1))
-                failed_experiments+=("${display_name}/${quant^^}")
-            fi
+        for model_key in "${models[@]}"; do
+            for quant in "${quants[@]}"; do
+                # 跳过未配置的组合
+                if should_skip_experiment "$model_key" "$quant"; then
+                    if [[ "$repeat" -eq 1 ]]; then
+                        local skip_display
+                        skip_display=$(get_model_field "$model_key" "display")
+                        log_warn "跳过: ${skip_display} / ${quant^^} (未配置该量化精度的模型路径)"
+                        skip_count=$((skip_count + 1))
+                    fi
+                    continue
+                fi
 
-            # 实验间留出清理时间
-            sleep 5
+                exp_index=$((exp_index + 1))
+                local display_name
+                display_name=$(get_model_field "$model_key" "display")
+
+                local run_label=""
+                if [[ "$REPEATS" -gt 1 ]]; then
+                    run_label=" [轮次 ${repeat}/${REPEATS}]"
+                fi
+
+                echo ""
+                log_info "========== 实验 ${exp_index}/${total_experiments}: ${display_name} / ${quant^^}${run_label} =========="
+
+                if run_single_experiment "$model_key" "$quant" "$NUM_PROMPTS"; then
+                    success_count=$((success_count + 1))
+                else
+                    fail_count=$((fail_count + 1))
+                    failed_experiments+=("${display_name}/${quant^^}${run_label}")
+                fi
+
+                sleep 5
+            done
         done
     done
 
@@ -976,6 +1008,7 @@ run_full_benchmark() {
 
     # 生成汇总对比表格
     generate_summary_table
+    generate_scatter_plot
 
     return $fail_count
 }
@@ -989,6 +1022,26 @@ generate_summary_table() {
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
     python3 "${script_dir}/summarize_benchmark.py" "${RESULT_DIR}" --markdown
+}
+
+generate_scatter_plot() {
+    log_step "生成散点图 + 加速比表格..."
+
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    python3 "${script_dir}/plot_benchmark.py" "${RESULT_DIR}" \
+        -o "${RUN_DIR}/benchmark_scatter.pdf" \
+        --table \
+        | tee "${RESULT_DIR}/speedup_table.md" \
+        || log_warn "散点图生成失败 (可能缺少 matplotlib)"
+
+    if [[ -f "${RUN_DIR}/benchmark_scatter.pdf" ]]; then
+        log_ok "散点图: ${RUN_DIR}/benchmark_scatter.pdf"
+    fi
+    if [[ -s "${RESULT_DIR}/speedup_table.md" ]]; then
+        log_ok "加速比表格: ${RESULT_DIR}/speedup_table.md"
+    fi
 }
 
 # ======================== 主入口 ========================

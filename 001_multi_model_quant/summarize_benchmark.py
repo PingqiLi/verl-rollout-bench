@@ -18,6 +18,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 from collections import OrderedDict
 from pathlib import Path
@@ -187,9 +188,11 @@ def load_results(
     for fpath in sorted(result_path.glob("*.json")):
         if fpath.name in skip_files:
             continue
-        # 文件名格式: <model_key>_<quant>.json  e.g. qwen3-1.7b_bf16.json
+        # 文件名格式: <model>_<quant>.json 或 <model>_<quant>_run<N>.json
         stem = fpath.stem
-        parts = stem.rsplit("_", 1)
+        m = re.match(r'^(.+)_run\d+$', stem)
+        base = m.group(1) if m else stem
+        parts = base.rsplit("_", 1)
         if len(parts) != 2:
             print(f"  [WARN] 跳过无法解析的文件: {fpath.name}")
             continue
